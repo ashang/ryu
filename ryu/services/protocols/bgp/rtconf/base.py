@@ -18,12 +18,12 @@
 """
 from abc import ABCMeta
 from abc import abstractmethod
+import functools
 import numbers
 import logging
 import uuid
-from types import BooleanType
-from types import IntType
-from types import LongType
+
+import six
 
 from ryu.services.protocols.bgp.base import add_bgp_error_metadata
 from ryu.services.protocols.bgp.base import BGPSException
@@ -31,7 +31,7 @@ from ryu.services.protocols.bgp.base import get_validator
 from ryu.services.protocols.bgp.base import RUNTIME_CONF_ERROR_CODE
 from ryu.services.protocols.bgp.base import validate
 from ryu.services.protocols.bgp.utils import validation
-from ryu.services.protocols.bgp.utils.validation import is_valid_old_asn
+from ryu.services.protocols.bgp.utils.validation import is_valid_asn
 
 LOG = logging.getLogger('bgpspeaker.rtconf.base')
 
@@ -40,10 +40,12 @@ LOG = logging.getLogger('bgpspeaker.rtconf.base')
 #
 CAP_REFRESH = 'cap_refresh'
 CAP_ENHANCED_REFRESH = 'cap_enhanced_refresh'
+CAP_FOUR_OCTET_AS_NUMBER = 'cap_four_octet_as_number'
 CAP_MBGP_IPV4 = 'cap_mbgp_ipv4'
 CAP_MBGP_IPV6 = 'cap_mbgp_ipv6'
 CAP_MBGP_VPNV4 = 'cap_mbgp_vpnv4'
 CAP_MBGP_VPNV6 = 'cap_mbgp_vpnv6'
+CAP_MBGP_EVPN = 'cap_mbgp_evpn'
 CAP_RTC = 'cap_rtc'
 RTC_AS = 'rtc_as'
 HOLD_TIME = 'hold_time'
@@ -144,13 +146,13 @@ class ConfigValueError(RuntimeConfigError):
 # Configuration base classes.
 # =============================================================================
 
+@six.add_metaclass(ABCMeta)
 class BaseConf(object):
     """Base class for a set of configuration values.
 
     Configurations can be required or optional. Also acts as a container of
     configuration change listeners.
     """
-    __metaclass__ = ABCMeta
 
     def __init__(self, **kwargs):
         self._req_settings = self.get_req_settings()
@@ -172,15 +174,15 @@ class BaseConf(object):
         return self._settings.copy()
 
     @classmethod
-    def get_valid_evts(self):
+    def get_valid_evts(cls):
         return set()
 
     @classmethod
-    def get_req_settings(self):
+    def get_req_settings(cls):
         return set()
 
     @classmethod
-    def get_opt_settings(self):
+    def get_opt_settings(cls):
         return set()
 
     @abstractmethod
@@ -210,8 +212,7 @@ class BaseConf(object):
         if unknown_attrs:
             raise RuntimeConfigError(desc=(
                 'Unknown attributes: %s' %
-                ', '.join([str(i) for i in unknown_attrs]))
-            )
+                ', '.join([str(i) for i in unknown_attrs])))
         missing_req_settings = self._req_settings - given_attrs
         if missing_req_settings:
             raise MissingRequiredConf(conf_name=list(missing_req_settings))
@@ -427,9 +428,9 @@ class ConfWithStats(BaseConf):
                                   **kwargs)
 
 
+@six.add_metaclass(ABCMeta)
 class BaseConfListener(object):
     """Base class of all configuration listeners."""
-    __metaclass__ = ABCMeta
 
     def __init__(self, base_conf):
         pass
@@ -481,6 +482,7 @@ class ConfWithStatsListener(BaseConfListener):
         raise NotImplementedError()
 
 
+@functools.total_ordering
 class ConfEvent(object):
     """Encapsulates configuration settings change/update event."""
 
@@ -519,9 +521,13 @@ class ConfEvent(object):
         return ('ConfEvent(src=%s, name=%s, value=%s)' %
                 (self.src, self.name, self.value))
 
-    def __cmp__(self, other):
-        return cmp((other.src, other.name, other.value),
-                   (self.src, self.name, self.value))
+    def __lt__(self, other):
+        return ((self.src, self.name, self.value) <
+                (other.src, other.name, other.value))
+
+    def __eq__(self, other):
+        return ((self.src, self.name, self.value) ==
+                (other.src, other.name, other.value))
 
 
 # =============================================================================
@@ -577,8 +583,8 @@ def validate_stats_time(stats_time):
 @validate(name=CAP_REFRESH)
 def validate_cap_refresh(crefresh):
     if crefresh not in (True, False):
-        raise ConfigTypeError(desc='Invalid Refresh capability settings: %s '
-                              ' boolean value expected' % crefresh)
+        raise ConfigTypeError(desc='Invalid Refresh capability settings: %s. '
+                              'Boolean value expected' % crefresh)
     return crefresh
 
 
@@ -586,24 +592,32 @@ def validate_cap_refresh(crefresh):
 def validate_cap_enhanced_refresh(cer):
     if cer not in (True, False):
         raise ConfigTypeError(desc='Invalid Enhanced Refresh capability '
-                              'settings: %s boolean value expected' % cer)
+                              'settings: %s. Boolean value expected' % cer)
     return cer
+
+
+@validate(name=CAP_FOUR_OCTET_AS_NUMBER)
+def validate_cap_four_octet_as_number(cfoan):
+    if cfoan not in (True, False):
+        raise ConfigTypeError(desc='Invalid Four-Octet AS Number capability '
+                              'settings: %s boolean value expected' % cfoan)
+    return cfoan
 
 
 @validate(name=CAP_MBGP_IPV4)
 def validate_cap_mbgp_ipv4(cmv4):
     if cmv4 not in (True, False):
-        raise ConfigTypeError(desc='Invalid Enhanced Refresh capability '
-                              'settings: %s boolean value expected' % cmv4)
+        raise ConfigTypeError(desc='Invalid MP-BGP IPv4 capability '
+                              'settings: %s. Boolean value expected' % cmv4)
 
     return cmv4
 
 
 @validate(name=CAP_MBGP_IPV6)
-def validate_cap_mbgp_ipv4(cmv6):
+def validate_cap_mbgp_ipv6(cmv6):
     if cmv6 not in (True, False):
-        raise ConfigTypeError(desc='Invalid Enhanced Refresh capability '
-                              'settings: %s boolean value expected' % cmv4)
+        raise ConfigTypeError(desc='Invalid MP-BGP IPv6 capability '
+                              'settings: %s. Boolean value expected' % cmv6)
 
     return cmv6
 
@@ -611,8 +625,8 @@ def validate_cap_mbgp_ipv4(cmv6):
 @validate(name=CAP_MBGP_VPNV4)
 def validate_cap_mbgp_vpnv4(cmv4):
     if cmv4 not in (True, False):
-        raise ConfigTypeError(desc='Invalid Enhanced Refresh capability '
-                              'settings: %s boolean value expected' % cmv4)
+        raise ConfigTypeError(desc='Invalid MP-BGP VPNv4 capability '
+                              'settings: %s. Boolean value expected' % cmv4)
 
     return cmv4
 
@@ -620,10 +634,18 @@ def validate_cap_mbgp_vpnv4(cmv4):
 @validate(name=CAP_MBGP_VPNV6)
 def validate_cap_mbgp_vpnv6(cmv6):
     if cmv6 not in (True, False):
-        raise ConfigTypeError(desc='Invalid Enhanced Refresh capability '
-                              'settings: %s boolean value expected' % cmv6)
+        raise ConfigTypeError(desc='Invalid MP-BGP VPNv6 capability '
+                              'settings: %s. Boolean value expected' % cmv6)
 
     return cmv6
+
+
+@validate(name=CAP_MBGP_EVPN)
+def validate_cap_mbgp_evpn(cmevpn):
+    if cmevpn not in (True, False):
+        raise ConfigTypeError(desc='Invalid Ethernet VPN capability '
+                              'settings: %s. Boolean value expected' % cmevpn)
+    return cmevpn
 
 
 @validate(name=CAP_RTC)
@@ -637,7 +659,7 @@ def validate_cap_rtc(cap_rtc):
 
 @validate(name=RTC_AS)
 def validate_cap_rtc_as(rtc_as):
-    if not is_valid_old_asn(rtc_as):
+    if not is_valid_asn(rtc_as):
         raise ConfigValueError(desc='Invalid RTC AS configuration value: %s'
                                % rtc_as)
     return rtc_as
@@ -645,7 +667,7 @@ def validate_cap_rtc_as(rtc_as):
 
 @validate(name=HOLD_TIME)
 def validate_hold_time(hold_time):
-    if ((hold_time is None) or (not isinstance(hold_time, IntType)) or
+    if ((hold_time is None) or (not isinstance(hold_time, int)) or
             hold_time < 10):
         raise ConfigValueError(desc='Invalid hold_time configuration value %s'
                                % hold_time)
@@ -665,7 +687,7 @@ def validate_med(med):
 def validate_soo_list(soo_list):
     if not isinstance(soo_list, list):
         raise ConfigTypeError(conf_name=SITE_OF_ORIGINS, conf_value=soo_list)
-    if not (len(soo_list) <= MAX_NUM_SOO):
+    if len(soo_list) > MAX_NUM_SOO:
         raise ConfigValueError(desc='Max. SOO is limited to %s' %
                                MAX_NUM_SOO)
     if not all(validation.is_valid_ext_comm_attr(attr) for attr in soo_list):
@@ -675,13 +697,13 @@ def validate_soo_list(soo_list):
     unique_rts = set(soo_list)
     if len(unique_rts) != len(soo_list):
         raise ConfigValueError(desc='Duplicate value provided in %s' %
-                               (soo_list))
+                               soo_list)
     return soo_list
 
 
 @validate(name=MAX_PREFIXES)
 def validate_max_prefixes(max_prefixes):
-    if not isinstance(max_prefixes, (IntType, LongType)):
+    if not isinstance(max_prefixes, six.integer_types):
         raise ConfigTypeError(desc='Max. prefixes value should be of type '
                               'int or long but found %s' % type(max_prefixes))
     if max_prefixes < 0:
@@ -692,7 +714,7 @@ def validate_max_prefixes(max_prefixes):
 
 @validate(name=ADVERTISE_PEER_AS)
 def validate_advertise_peer_as(advertise_peer_as):
-    if not isinstance(advertise_peer_as, BooleanType):
+    if not isinstance(advertise_peer_as, bool):
         raise ConfigTypeError(desc='Invalid type for advertise-peer-as, '
                               'expected bool got %s' %
                               type(advertise_peer_as))

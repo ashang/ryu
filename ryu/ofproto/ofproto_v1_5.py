@@ -19,6 +19,8 @@ OpenFlow 1.5 definitions.
 """
 
 from ryu.lib import type_desc
+from ryu.ofproto import nicira_ext
+from ryu.ofproto import ofproto_utils
 from ryu.ofproto import oxm_fields
 from ryu.ofproto import oxs_fields
 
@@ -389,9 +391,7 @@ oxm_types = [
     oxm_fields.OpenFlowBasic('in_phy_port', 1, type_desc.Int4),
     oxm_fields.OpenFlowBasic('metadata', 2, type_desc.Int8),
     oxm_fields.OpenFlowBasic('eth_dst', 3, type_desc.MacAddr),
-    oxm_fields.NiciraExtended0('eth_dst_nxm', 1, type_desc.MacAddr),
     oxm_fields.OpenFlowBasic('eth_src', 4, type_desc.MacAddr),
-    oxm_fields.NiciraExtended0('eth_src_nxm', 2, type_desc.MacAddr),
     oxm_fields.OpenFlowBasic('eth_type', 5, type_desc.Int2),
     oxm_fields.OpenFlowBasic('vlan_vid', 6, type_desc.Int2),
     oxm_fields.OpenFlowBasic('vlan_pcp', 7, type_desc.Int1),
@@ -426,16 +426,12 @@ oxm_types = [
     oxm_fields.OpenFlowBasic('mpls_bos', 36, type_desc.Int1),
     oxm_fields.OpenFlowBasic('pbb_isid', 37, type_desc.Int3),
     oxm_fields.OpenFlowBasic('tunnel_id', 38, type_desc.Int8),
-    oxm_fields.NiciraExtended1('tunnel_id_nxm', 16, type_desc.Int8),
     oxm_fields.OpenFlowBasic('ipv6_exthdr', 39, type_desc.Int2),
     oxm_fields.OpenFlowBasic('pbb_uca', 41, type_desc.Int1),
     oxm_fields.OpenFlowBasic('tcp_flags', 42, type_desc.Int2),
     oxm_fields.OpenFlowBasic('actset_output', 43, type_desc.Int4),
     oxm_fields.OpenFlowBasic('packet_type', 44, type_desc.Int4),
-    oxm_fields.NiciraExtended1('tun_ipv4_src', 31, type_desc.IPv4Addr),
-    oxm_fields.NiciraExtended1('tun_ipv4_dst', 32, type_desc.IPv4Addr),
-    oxm_fields.NiciraExtended1('conj_id', 37, type_desc.Int4),
-]
+] + nicira_ext.oxm_types
 
 oxm_fields.generate(__name__)
 
@@ -665,9 +661,9 @@ OFPGC_REMOVE_BUCKET = 5     # Remove all action buckets or any specific action
                             # bucket from matching group
 
 # enum ofp_group_bucket_prop_type
-OFPGBPT_WEIGHT = 0      # Select groups only.
-OFPGBPT_WATCH_PORT = 1  # Fast failover groups only.
-OFPGBPT_WATCH_GROU = 2  # Fast failover groups only.
+OFPGBPT_WEIGHT = 0             # Select groups only.
+OFPGBPT_WATCH_PORT = 1         # Fast failover groups only.
+OFPGBPT_WATCH_GROUP = 2        # Fast failover groups only.
 OFPGBPT_EXPERIMENTER = 0xFFFF  # Experimenter defined.
 
 # struct ofp_group_bucket_prop_header
@@ -744,9 +740,10 @@ OFPGT_FF = 3        # Fast failover group.
 OFP_NO_BUFFER = 0xffffffff  # Special buffer-id to indicate 'no buffer'
 
 # struct ofp_packet_out
-OFP_PACKET_OUT_PACK_STR = '!IH2x'
+OFP_PACKET_OUT_0_PACK_STR = '!IH2x'
+OFP_PACKET_OUT_0_SIZE = 16
 OFP_PACKET_OUT_SIZE = 24
-assert (calcsize(OFP_PACKET_OUT_PACK_STR) + OFP_MATCH_SIZE + OFP_HEADER_SIZE ==
+assert (calcsize(OFP_PACKET_OUT_0_PACK_STR) + OFP_MATCH_SIZE + OFP_HEADER_SIZE ==
         OFP_PACKET_OUT_SIZE)
 
 # enum ofp_packet_in_reason
@@ -920,6 +917,7 @@ OFPBAC_BAD_SET_TYPE = 13        # Unsupported type in SET_FIELD action.
 OFPBAC_BAD_SET_LEN = 14         # Length problem in SET_FIELD action.
 OFPBAC_BAD_SET_ARGUMENT = 15    # Bad arguement in SET_FIELD action.
 OFPBAC_BAD_SET_MASK = 16        # Bad mask in SET_FIELD action.
+OFPBAC_BAD_METER = 17           # Invalid meter id in meter action.
 
 # enum ofp_bad_instruction_code
 OFPBIC_UNKNOWN_INST = 0         # Unknown instruction.
@@ -1196,7 +1194,7 @@ assert (calcsize(OFP_FLOW_STATS_REQUEST_PACK_STR) ==
         OFP_FLOW_STATS_REQUEST_SIZE)
 
 # struct ofp_flow_desc
-_OFP_FLOW_DESC_0_PACK_STR = 'H2xBBHHHHHQ'
+_OFP_FLOW_DESC_0_PACK_STR = 'H2xBxHHHHHQ'
 OFP_FLOW_DESC_0_PACK_STR = '!' + _OFP_FLOW_DESC_0_PACK_STR
 OFP_FLOW_DESC_0_SIZE = 24
 assert calcsize(OFP_FLOW_DESC_0_PACK_STR) == OFP_FLOW_DESC_0_SIZE
@@ -1374,11 +1372,6 @@ OFP_BUCKET_COUNTER_PACK_STR = '!QQ'
 OFP_BUCKET_COUNTER_SIZE = 16
 assert calcsize(OFP_BUCKET_COUNTER_PACK_STR) == OFP_BUCKET_COUNTER_SIZE
 
-# struct ofp_group_desc_stats
-OFP_GROUP_DESC_STATS_PACK_STR = '!HBxI'
-OFP_GROUP_DESC_STATS_SIZE = 8
-assert calcsize(OFP_GROUP_DESC_STATS_PACK_STR) == OFP_GROUP_DESC_STATS_SIZE
-
 # struct ofp_group_stats
 OFP_GROUP_STATS_PACK_STR = '!H2xII4xQQII'
 OFP_GROUP_STATS_SIZE = 40
@@ -1388,6 +1381,12 @@ assert calcsize(OFP_GROUP_STATS_PACK_STR) == OFP_GROUP_STATS_SIZE
 OFP_GROUP_DESC_PACK_STR = '!HBxIH6x'
 OFP_GROUP_DESC_SIZE = 16
 assert calcsize(OFP_GROUP_DESC_PACK_STR) == OFP_GROUP_DESC_SIZE
+
+# struct ofp_group_desc_stats
+# Backward compatibility with 1.3.1 - avoid breaking the API.
+OFP_GROUP_DESC_STATS_PACK_STR = OFP_GROUP_DESC_PACK_STR
+OFP_GROUP_DESC_STATS_SIZE = OFP_GROUP_DESC_SIZE
+assert calcsize(OFP_GROUP_DESC_STATS_PACK_STR) == OFP_GROUP_DESC_STATS_SIZE
 
 # enum ofp_group_capabilities
 OFPGFC_SELECT_WEIGHT = 1 << 0       # Support weight for select groups.
@@ -1627,14 +1626,11 @@ OFP_TIME_SIZE = 16
 assert calcsize(OFP_TIME_PACK_STR) == OFP_TIME_SIZE
 
 # struct ofp_bundle_features_prop_time
-OFP_BUNDLE_FEATURES_PROP_TIME_PACK_STR = ('!HH4x' +
-                                          _OFP_TIME_PACK_STR +
-                                          _OFP_TIME_PACK_STR +
-                                          _OFP_TIME_PACK_STR +
-                                          _OFP_TIME_PACK_STR)
+OFP_BUNDLE_FEATURES_PROP_TIME_0_PACK_STR = '!HH4x'
+OFP_BUNDLE_FEATURES_PROP_TIME_0_SIZE = 8
 OFP_BUNDLE_FEATURES_PROP_TIME_SIZE = 72
-assert (calcsize(OFP_BUNDLE_FEATURES_PROP_TIME_PACK_STR) ==
-        OFP_BUNDLE_FEATURES_PROP_TIME_SIZE)
+assert (calcsize(OFP_BUNDLE_FEATURES_PROP_TIME_0_PACK_STR) +
+        OFP_TIME_SIZE * 4 == OFP_BUNDLE_FEATURES_PROP_TIME_SIZE)
 
 # enum ofp_bundle_feature_flags
 OFPBF_TIMESTAMP = 1 << 0        # Request includes a timestamp.
@@ -1808,6 +1804,18 @@ OFP_BUNDLE_ADD_MSG_PACK_STR = (OFP_BUNDLE_ADD_MSG_0_PACK_STR +
 OFP_BUNDLE_ADD_MSG_SIZE = 24
 assert (calcsize(OFP_BUNDLE_ADD_MSG_PACK_STR) + OFP_HEADER_SIZE ==
         OFP_BUNDLE_ADD_MSG_SIZE)
+
+# Note: struct ofp_prop_experimenter is specific to this implementation.
+# It does not have a corresponding structure in the specification.
+# This structure defines common structure for ofp_*_prop_experimenter.
+# struct ofp_prop_experimenter
+OFP_PROP_EXPERIMENTER_PACK_STR = '!HHII'
+OFP_PROP_EXPERIMENTER_SIZE = 12
+assert (calcsize(OFP_PROP_EXPERIMENTER_PACK_STR) ==
+        OFP_PROP_EXPERIMENTER_SIZE)
+
+# generate utility methods
+ofproto_utils.generate(__name__)
 
 # define constants
 OFP_VERSION = 0x06

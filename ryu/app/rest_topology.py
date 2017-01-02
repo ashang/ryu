@@ -14,12 +14,14 @@
 # limitations under the License.
 
 import json
-from webob import Response
 
-from ryu.app.wsgi import ControllerBase, WSGIApplication, route
+from ryu.app.wsgi import ControllerBase
+from ryu.app.wsgi import Response
+from ryu.app.wsgi import route
+from ryu.app.wsgi import WSGIApplication
 from ryu.base import app_manager
 from ryu.lib import dpid as dpid_lib
-from ryu.topology.api import get_switch, get_link
+from ryu.topology.api import get_switch, get_link, get_host
 
 # REST API for switch configuration
 #
@@ -34,6 +36,12 @@ from ryu.topology.api import get_switch, get_link
 #
 # get the links of a switch
 # GET /v1.0/topology/links/<dpid>
+#
+# get all the hosts
+# GET /v1.0/topology/hosts
+#
+# get the hosts of a switch
+# GET /v1.0/topology/hosts/<dpid>
 #
 # where
 # <dpid>: datapath id in 16 hex
@@ -76,6 +84,16 @@ class TopologyController(ControllerBase):
     def get_links(self, req, **kwargs):
         return self._links(req, **kwargs)
 
+    @route('topology', '/v1.0/topology/hosts',
+           methods=['GET'])
+    def list_hosts(self, req, **kwargs):
+        return self._hosts(req, **kwargs)
+
+    @route('topology', '/v1.0/topology/hosts/{dpid}',
+           methods=['GET'], requirements={'dpid': dpid_lib.DPID_PATTERN})
+    def get_hosts(self, req, **kwargs):
+        return self._hosts(req, **kwargs)
+
     def _switches(self, req, **kwargs):
         dpid = None
         if 'dpid' in kwargs:
@@ -90,4 +108,12 @@ class TopologyController(ControllerBase):
             dpid = dpid_lib.str_to_dpid(kwargs['dpid'])
         links = get_link(self.topology_api_app, dpid)
         body = json.dumps([link.to_dict() for link in links])
+        return Response(content_type='application/json', body=body)
+
+    def _hosts(self, req, **kwargs):
+        dpid = None
+        if 'dpid' in kwargs:
+            dpid = dpid_lib.str_to_dpid(kwargs['dpid'])
+        hosts = get_host(self.topology_api_app, dpid)
+        body = json.dumps([host.to_dict() for host in hosts])
         return Response(content_type='application/json', body=body)

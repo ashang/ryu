@@ -6,7 +6,7 @@ Ryu provides software components with well defined API that make it
 easy for developers to create new network management and control
 applications. Ryu supports various protocols for managing network
 devices, such as OpenFlow, Netconf, OF-config, etc. About OpenFlow,
-Ryu supports fully 1.0, 1.2, 1.3, 1.4 and Nicira Extensions.
+Ryu supports fully 1.0, 1.2, 1.3, 1.4, 1.5 and Nicira Extensions.
 
 All of the code is freely available under the Apache 2.0 license. Ryu
 is fully written in Python.
@@ -21,13 +21,10 @@ Installing Ryu is quite easy::
 If you prefer to install Ryu from the source code::
 
    % git clone git://github.com/osrg/ryu.git
-   % cd ryu; python ./setup.py install
-
-If you want to use Ryu with `OpenStack <http://openstack.org/>`_,
-please refer `networking-ofagent project <https://github.com/stackforge/networking-ofagent>`_.
+   % cd ryu; pip install .
 
 If you want to write your Ryu application, have a look at
-`Writing ryu application <http://ryu.readthedocs.org/en/latest/writing_ryu_app.html>`_ document.
+`Writing ryu application <http://ryu.readthedocs.io/en/latest/writing_ryu_app.html>`_ document.
 After writing your application, just type::
 
    % ryu-manager yourapp.py
@@ -38,14 +35,15 @@ Optional Requirements
 
 Some functionalities of ryu requires extra packages:
 
-- OF-Config requires lxml
+- OF-Config requires lxml and ncclient
 - NETCONF requires paramiko
-- BGP speaker (ssh console) requires paramiko
+- BGP speaker (SSH console) requires paramiko
 
 If you want to use the functionalities, please install requirements::
 
-    % pip install lxml
-    % pip install paramiko
+    % pip install -r tools/optional-requires
+
+Please refer to tools/optional-requires for details.
 
 
 Support

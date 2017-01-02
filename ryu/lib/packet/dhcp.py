@@ -76,6 +76,8 @@ DHCP_SUBNET_MASK_OPT = 1
 DHCP_GATEWAY_ADDR_OPT = 3
 DHCP_DNS_SERVER_ADDR_OPT = 6
 DHCP_HOST_NAME_OPT = 12
+DHCP_DOMAIN_NAME_OPT = 15
+DHCP_INTERFACE_MTU_OPT = 26
 DHCP_REQUESTED_IP_ADDR_OPT = 50
 DHCP_IP_ADDR_LEASE_TIME_OPT = 51
 DHCP_MESSAGE_TYPE_OPT = 53
@@ -83,6 +85,7 @@ DHCP_SERVER_IDENTIFIER_OPT = 54
 DHCP_PARAMETER_REQUEST_LIST_OPT = 55
 DHCP_RENEWAL_TIME_OPT = 58
 DHCP_REBINDING_TIME_OPT = 59
+DHCP_CLASSLESS_ROUTE_OPT = 121
 DHCP_END_OPT = 255
 
 
@@ -133,6 +136,7 @@ class dhcp(packet_base.PacketBase):
                     every DHCP message).
     ============== ====================
     """
+    _MIN_LEN = 236
     _HLEN_UNPACK_STR = '!BBB'
     _HLEN_UNPACK_LEN = struct.calcsize(_HLEN_UNPACK_STR)
     _DHCP_UNPACK_STR = '!BIHH4s4s4s4s%ds%ds64s128s'
@@ -149,7 +153,7 @@ class dhcp(packet_base.PacketBase):
     def __init__(self, op, chaddr, options, htype=_HARDWARE_TYPE_ETHERNET,
                  hlen=0, hops=0, xid=None, secs=0, flags=0,
                  ciaddr='0.0.0.0', yiaddr='0.0.0.0', siaddr='0.0.0.0',
-                 giaddr='0.0.0.0', sname=b'', boot_file=b''):
+                 giaddr='0.0.0.0', sname='', boot_file=b''):
         super(dhcp, self).__init__()
         self.op = op
         self.htype = htype
@@ -192,7 +196,8 @@ class dhcp(packet_base.PacketBase):
                     addrconv.ipv4.bin_to_text(ciaddr),
                     addrconv.ipv4.bin_to_text(yiaddr),
                     addrconv.ipv4.bin_to_text(siaddr),
-                    addrconv.ipv4.bin_to_text(giaddr), sname, boot_file),
+                    addrconv.ipv4.bin_to_text(giaddr),
+                    sname.decode('ascii'), boot_file),
                 None, buf[length:])
 
     @classmethod
@@ -213,7 +218,7 @@ class dhcp(packet_base.PacketBase):
                            addrconv.ipv4.text_to_bin(self.siaddr),
                            addrconv.ipv4.text_to_bin(self.giaddr),
                            addrconv.mac.text_to_bin(self.chaddr),
-                           self.sname, self.boot_file, seri_opt)
+                           self.sname.encode('ascii'), self.boot_file, seri_opt)
 
 
 class options(stringify.StringifyMixin):

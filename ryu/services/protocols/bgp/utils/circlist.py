@@ -13,6 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import six
+if six.PY3:
+    from sys import intern
+
 
 class CircularListType(object):
     """Instances of this class represent a specific type of list.

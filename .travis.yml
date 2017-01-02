@@ -1,16 +1,25 @@
 language: python
 python:
-  - "2.7"
+  - "3.5"  # Python 3.5 still needs to be installed on Travis-CI
 
 env:
-  - TOX_ENV=py26
   - TOX_ENV=py27
+  - TOX_ENV=py34
+  - TOX_ENV=py35
+  - TOX_ENV=pypy26
   - TOX_ENV=pep8
 
+services:
+  - docker
+
+sudo: required  # Required to enable Docker service
+
 install:
-  - "pip install tox"
+  - pip install tox coveralls
+  - bash ryu/tests/integrated/common/install_docker_test_pkg_for_travis.sh
 
 script:
-  - tox -e $TOX_ENV
+  - NOSE_VERBOSE=0 tox -e $TOX_ENV
 
-sudo: false
+after_success:
+  - coveralls

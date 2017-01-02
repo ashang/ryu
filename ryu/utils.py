@@ -30,13 +30,32 @@
 #    under the License.
 
 
-import inspect
+import importlib
 import logging
 import os
 import sys
 import re
 
+import six
+
 LOG = logging.getLogger('ryu.utils')
+
+
+def load_source(name, pathname):
+    """
+    This function provides the backward compatibility for 'imp.load_source'
+    in Python 2.
+
+    :param name: Name used to create or access a module object.
+    :param pathname: Path pointing to the source file.
+    :return: Loaded and initialized module.
+    """
+    if six.PY2:
+        import imp
+        return imp.load_source(name, pathname)
+    else:
+        loader = importlib.machinery.SourceFileLoader(name, pathname)
+        return loader.load_module(name)
 
 
 def chop_py_suffix(p):
@@ -77,46 +96,47 @@ def _find_loaded_module(modpath):
 
 def import_module(modname):
     try:
-        __import__(modname)
-    except:
+        # Import module with python module path
+        # e.g.) modname = 'module.path.module_name'
+        return importlib.import_module(modname)
+    except (ImportError, TypeError):
+        # In this block, we retry to import module when modname is filename
+        # e.g.) modname = 'module/path/module_name.py'
         abspath = os.path.abspath(modname)
+        # Check if specified modname is already imported
         mod = _find_loaded_module(abspath)
         if mod:
             return mod
-        opath = sys.path
+        # Backup original sys.path before appending path to file
+        original_path = list(sys.path)
         sys.path.append(os.path.dirname(abspath))
-        name = os.path.basename(modname)
-        if name.endswith('.py'):
-            name = name[:-3]
-        __import__(name)
-        sys.path = opath
-        return sys.modules[name]
-    return sys.modules[modname]
+        # Remove python suffix
+        name = chop_py_suffix(os.path.basename(modname))
+        # Retry to import
+        mod = importlib.import_module(name)
+        # Restore sys.path
+        sys.path = original_path
+        return mod
 
 
 def round_up(x, y):
     return ((x + y - 1) // y) * y
 
 
-def _str_to_hex(data):
-    """Convert string into array of hexes to be printed."""
-    return ' '.join(hex(ord(char)) for char in data)
-
-
-def _bytearray_to_hex(data):
-    """Convert bytearray into array of hexes to be printed."""
-    return ' '.join(hex(byte) for byte in data)
-
-
 def hex_array(data):
-    """Convert string or bytearray into array of hexes to be printed."""
-    to_hex = {str: _str_to_hex,
-              bytearray: _bytearray_to_hex}
-    try:
-        return to_hex[type(data)](data)
-    except KeyError:
-        LOG.exception('%s is invalid data type', type(data))
-        return None
+    """
+    Convert six.binary_type or bytearray into array of hexes to be printed.
+    """
+    # convert data into bytearray explicitly
+    return ' '.join('0x%02x' % byte for byte in bytearray(data))
+
+
+def binary_str(data):
+    """
+    Convert six.binary_type or bytearray into str to be printed.
+    """
+    # convert data into bytearray explicitly
+    return ''.join('\\x%02x' % byte for byte in bytearray(data))
 
 
 # the following functions are taken from OpenStack
@@ -130,8 +150,9 @@ def get_reqs_from_files(requirements_files):
     return []
 
 
-def parse_requirements(requirements_files=['requirements.txt',
-                                           'tools/pip-requires']):
+def parse_requirements(requirements_files=None):
+    requirements_files = requirements_files if requirements_files else [
+        'requirements.txt', 'tools/pip-requires']
     requirements = []
     for line in get_reqs_from_files(requirements_files):
         # For the requirements list, we need to inject only the portion

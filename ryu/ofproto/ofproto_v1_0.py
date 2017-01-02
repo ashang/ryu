@@ -18,8 +18,8 @@
 OpenFlow 1.0 definitions.
 """
 
-from struct import calcsize
-
+from ryu.ofproto import ofproto_utils
+from ryu.ofproto.nicira_ext import *  # For API compat
 
 MAX_XID = 0xffffffff
 
@@ -197,9 +197,6 @@ OFP_ACTION_OUTPUT_PACK_STR = '!HHHH'
 OFP_ACTION_OUTPUT_SIZE = 8
 assert calcsize(OFP_ACTION_OUTPUT_PACK_STR) == OFP_ACTION_OUTPUT_SIZE
 
-# define constants
-OFP_VLAN_NONE = 0xffff
-
 OFP_ACTION_VLAN_VID_PACK_STR = '!HHH2x'
 OFP_ACTION_VLAN_VID_SIZE = 8
 assert calcsize(OFP_ACTION_VLAN_VID_PACK_STR) == OFP_ACTION_VLAN_VID_SIZE
@@ -228,6 +225,8 @@ OFP_ACTION_VENDOR_HEADER_PACK_STR = '!HHI'
 OFP_ACTION_VENDOR_HEADER_SIZE = 8
 assert (calcsize(OFP_ACTION_VENDOR_HEADER_PACK_STR) ==
         OFP_ACTION_VENDOR_HEADER_SIZE)
+# OpenFlow1.2 or later compatible
+OFP_ACTION_EXPERIMENTER_HEADER_SIZE = OFP_ACTION_VENDOR_HEADER_SIZE
 
 OFP_ACTION_HEADER_PACK_STR = '!HH4x'
 OFP_ACTION_HEADER_SIZE = 8
@@ -266,10 +265,12 @@ OFPFW_TP_DST = 1 << 7       # TCP/UDP destination port.
 OFPFW_NW_SRC_SHIFT = 8
 OFPFW_NW_SRC_BITS = 6
 OFPFW_NW_SRC_MASK = ((1 << OFPFW_NW_SRC_BITS) - 1) << OFPFW_NW_SRC_SHIFT
+OFPFW_NW_SRC = OFPFW_NW_SRC_MASK  # IP source address (not in OF Spec).
 OFPFW_NW_SRC_ALL = 32 << OFPFW_NW_SRC_SHIFT
 OFPFW_NW_DST_SHIFT = 14
 OFPFW_NW_DST_BITS = 6
 OFPFW_NW_DST_MASK = ((1 << OFPFW_NW_DST_BITS) - 1) << OFPFW_NW_DST_SHIFT
+OFPFW_NW_DST = OFPFW_NW_DST_MASK  # IP destination address (not in OF Spec).
 OFPFW_NW_DST_ALL = 32 << OFPFW_NW_DST_SHIFT
 OFPFW_DL_VLAN_PCP = 1 << 20     # VLAN priority.
 OFPFW_NW_TOS = 1 << 21  # IP ToS (DSCP field, 6 bits).
@@ -495,101 +496,37 @@ OFP_QUEUE_PROP_MIN_RATE_SIZE = 16
 assert (calcsize(OFP_QUEUE_PROP_MIN_RATE_PACK_STR) +
         OFP_QUEUE_PROP_HEADER_SIZE == OFP_QUEUE_PROP_MIN_RATE_SIZE)
 
+# OXM
 
-def nxm_header__(vendor, field, hasmask, length):
-    return (vendor << 16) | (field << 9) | (hasmask << 8) | length
-
-
-def nxm_header(vendor, field, length):
-    return nxm_header__(vendor, field, 0, length)
+# enum ofp_oxm_class
+OFPXMC_OPENFLOW_BASIC = 0x8000  # Basic class for OpenFlow
 
 
-def nxm_header_w(vendor, field, length):
-    return nxm_header__(vendor, field, 1, (length) * 2)
+def _oxm_tlv_header(class_, field, hasmask, length):
+    return (class_ << 16) | (field << 9) | (hasmask << 8) | length
 
 
-NXM_OF_IN_PORT = nxm_header(0x0000, 0, 2)
-
-NXM_OF_ETH_DST = nxm_header(0x0000, 1, 6)
-NXM_OF_ETH_DST_W = nxm_header_w(0x0000, 1, 6)
-NXM_OF_ETH_SRC = nxm_header(0x0000, 2, 6)
-NXM_OF_ETH_SRC_W = nxm_header_w(0x0000, 2, 6)
-NXM_OF_ETH_TYPE = nxm_header(0x0000, 3, 2)
-
-NXM_OF_VLAN_TCI = nxm_header(0x0000, 4, 2)
-NXM_OF_VLAN_TCI_W = nxm_header_w(0x0000, 4, 2)
-
-NXM_OF_IP_TOS = nxm_header(0x0000, 5, 1)
-
-NXM_OF_IP_PROTO = nxm_header(0x0000, 6, 1)
-
-NXM_OF_IP_SRC = nxm_header(0x0000, 7, 4)
-NXM_OF_IP_SRC_W = nxm_header_w(0x0000, 7, 4)
-NXM_OF_IP_DST = nxm_header(0x0000, 8, 4)
-NXM_OF_IP_DST_W = nxm_header_w(0x0000, 8, 4)
-
-NXM_OF_TCP_SRC = nxm_header(0x0000, 9, 2)
-NXM_OF_TCP_SRC_W = nxm_header_w(0x0000, 9, 2)
-NXM_OF_TCP_DST = nxm_header(0x0000, 10, 2)
-NXM_OF_TCP_DST_W = nxm_header_w(0x0000, 10, 2)
-
-NXM_OF_UDP_SRC = nxm_header(0x0000, 11, 2)
-NXM_OF_UDP_SRC_W = nxm_header_w(0x0000, 11, 2)
-NXM_OF_UDP_DST = nxm_header(0x0000, 12, 2)
-NXM_OF_UDP_DST_W = nxm_header_w(0x0000, 12, 2)
-
-NXM_OF_ICMP_TYPE = nxm_header(0x0000, 13, 1)
-NXM_OF_ICMP_CODE = nxm_header(0x0000, 14, 1)
-
-NXM_OF_ARP_OP = nxm_header(0x0000, 15, 2)
-
-NXM_OF_ARP_SPA = nxm_header(0x0000, 16, 4)
-NXM_OF_ARP_SPA_W = nxm_header_w(0x0000, 16, 4)
-NXM_OF_ARP_TPA = nxm_header(0x0000, 17, 4)
-NXM_OF_ARP_TPA_W = nxm_header_w(0x0000, 17, 4)
-
-NXM_NX_TUN_ID = nxm_header(0x0001, 16, 8)
-NXM_NX_TUN_ID_W = nxm_header_w(0x0001, 16, 8)
-NXM_NX_TUN_IPV4_SRC = nxm_header(0x0001, 31, 4)
-NXM_NX_TUN_IPV4_SRC_W = nxm_header_w(0x0001, 31, 4)
-NXM_NX_TUN_IPV4_DST = nxm_header(0x0001, 32, 4)
-NXM_NX_TUN_IPV4_DST_W = nxm_header_w(0x0001, 32, 4)
-
-NXM_NX_ARP_SHA = nxm_header(0x0001, 17, 6)
-NXM_NX_ARP_THA = nxm_header(0x0001, 18, 6)
-
-NXM_NX_IPV6_SRC = nxm_header(0x0001, 19, 16)
-NXM_NX_IPV6_SRC_W = nxm_header_w(0x0001, 19, 16)
-NXM_NX_IPV6_DST = nxm_header(0x0001, 20, 16)
-NXM_NX_IPV6_DST_W = nxm_header_w(0x0001, 20, 16)
-
-NXM_NX_ICMPV6_TYPE = nxm_header(0x0001, 21, 1)
-NXM_NX_ICMPV6_CODE = nxm_header(0x0001, 22, 1)
-
-NXM_NX_ND_TARGET = nxm_header(0x0001, 23, 16)
-NXM_NX_ND_TARGET_W = nxm_header_w(0x0001, 23, 16)
-
-NXM_NX_ND_SLL = nxm_header(0x0001, 24, 6)
-
-NXM_NX_ND_TLL = nxm_header(0x0001, 25, 6)
-
-NXM_NX_IP_FRAG = nxm_header(0x0001, 26, 1)
-NXM_NX_IP_FRAG_W = nxm_header_w(0x0001, 26, 1)
-
-NXM_NX_IPV6_LABEL = nxm_header(0x0001, 27, 4)
-
-NXM_NX_IP_ECN = nxm_header(0x0001, 28, 1)
-
-NXM_NX_IP_TTL = nxm_header(0x0001, 29, 1)
+def oxm_tlv_header(field, length):
+    return _oxm_tlv_header(OFPXMC_OPENFLOW_BASIC, field, 0, length)
 
 
-def nxm_nx_reg(idx):
-    return nxm_header(0x0001, idx, 4)
+def oxm_tlv_header_w(field, length):
+    return _oxm_tlv_header(OFPXMC_OPENFLOW_BASIC, field, 1, length * 2)
 
 
-def nxm_nx_reg_w(idx):
-    return nxm_header_w(0x0001, idx, 4)
+def oxm_tlv_header_extract_hasmask(header):
+    return (header >> 8) & 1
 
-NXM_HEADER_PACK_STRING = '!I'
 
-from ryu.ofproto.nicira_ext import *  # For API compat
+def oxm_tlv_header_extract_length(header):
+    if oxm_tlv_header_extract_hasmask(header):
+        length = (header & 0xff) // 2
+    else:
+        length = header & 0xff
+    return length
+
+
+oxm_fields.generate(__name__)
+
+# generate utility methods
+ofproto_utils.generate(__name__)

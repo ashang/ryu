@@ -80,6 +80,7 @@ BFD Control packet format
 import binascii
 import hashlib
 import random
+import six
 import struct
 
 from . import packet_base
@@ -240,7 +241,7 @@ class bfd(packet_base.PacketBase):
         flags = flags & 0x3f
 
         if flags & BFD_FLAG_AUTH_PRESENT:
-            (auth_type,) = struct.unpack_from('!B', buf[cls._PACK_STR_LEN])
+            auth_type = six.indexbytes(buf, cls._PACK_STR_LEN)
             auth_cls = cls._auth_parsers[auth_type].\
                 parser(buf[cls._PACK_STR_LEN:])[0]
         else:
@@ -396,8 +397,7 @@ class SimplePassword(BFDAuth):
         (auth_type, auth_len) = cls.parser_hdr(buf)
         assert auth_type == cls.auth_type
 
-        (auth_key_id,) = struct.unpack_from(cls._PACK_STR,
-                                            buf[cls._PACK_HDR_STR_LEN])
+        auth_key_id = six.indexbytes(buf, cls._PACK_HDR_STR_LEN)
 
         password = buf[cls._PACK_HDR_STR_LEN + cls._PACK_STR_LEN:auth_len]
 
@@ -417,7 +417,7 @@ class SimplePassword(BFDAuth):
         return self.serialize_hdr() + \
             struct.pack(self._PACK_STR, self.auth_key_id) + self.password
 
-    def authenticate(self, prev=None, auth_keys={}):
+    def authenticate(self, prev=None, auth_keys=None):
         """Authenticate the password for this packet.
 
         This method can be invoked only when ``self.password`` is defined.
@@ -431,6 +431,7 @@ class SimplePassword(BFDAuth):
         ``auth_keys`` is a dictionary of authentication key chain which
         key is an integer of *Auth Key ID* and value is a string of *Password*.
         """
+        auth_keys = auth_keys if auth_keys else {}
         assert isinstance(prev, bfd)
         if self.auth_key_id in auth_keys and \
                 self.password == auth_keys[self.auth_key_id]:
@@ -520,7 +521,7 @@ class KeyedMD5(BFDAuth):
         return auth_hdr_bin + struct.pack(self._PACK_STR, self.auth_key_id, 0,
                                           self.seq, self.digest)
 
-    def authenticate(self, prev, auth_keys={}):
+    def authenticate(self, prev, auth_keys=None):
         """Authenticate the MD5 digest for this packet.
 
         This method can be invoked only when ``self.digest`` is defined.
@@ -536,6 +537,7 @@ class KeyedMD5(BFDAuth):
         ``auth_keys`` is a dictionary of authentication key chain which
         key is an integer of *Auth Key ID* and value is a string of *Auth Key*.
         """
+        auth_keys = auth_keys if auth_keys else {}
         assert isinstance(prev, bfd)
 
         if self.digest is None:
@@ -670,7 +672,7 @@ class KeyedSHA1(BFDAuth):
         return auth_hdr_bin + struct.pack(self._PACK_STR, self.auth_key_id, 0,
                                           self.seq, self.auth_hash)
 
-    def authenticate(self, prev, auth_keys={}):
+    def authenticate(self, prev, auth_keys=None):
         """Authenticate the SHA1 hash for this packet.
 
         This method can be invoked only when ``self.auth_hash`` is defined.
@@ -686,6 +688,7 @@ class KeyedSHA1(BFDAuth):
         ``auth_keys`` is a dictionary of authentication key chain which
         key is an integer of *Auth Key ID* and value is a string of *Auth Key*.
         """
+        auth_keys = auth_keys if auth_keys else {}
         assert isinstance(prev, bfd)
 
         if self.auth_hash is None:

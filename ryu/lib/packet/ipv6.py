@@ -21,6 +21,7 @@ from . import icmpv6
 from . import tcp
 from . import udp
 from . import sctp
+from . import gre
 from . import in_proto as inet
 from ryu.lib import addrconv
 from ryu.lib import stringify
@@ -146,6 +147,7 @@ ipv6.register_packet_type(icmpv6.icmpv6, inet.IPPROTO_ICMPV6)
 ipv6.register_packet_type(tcp.tcp, inet.IPPROTO_TCP)
 ipv6.register_packet_type(udp.udp, inet.IPPROTO_UDP)
 ipv6.register_packet_type(sctp.sctp, inet.IPPROTO_SCTP)
+ipv6.register_packet_type(gre.gre, inet.IPPROTO_GRE)
 
 
 @six.add_metaclass(abc.ABCMeta)
@@ -413,6 +415,11 @@ class routing_type3(header):
 
     _PACK_STR = '!BBBBBB2x'
     _MIN_LEN = struct.calcsize(_PACK_STR)
+    _TYPE = {
+        'asciilist': [
+            'adrs'
+        ]
+    }
 
     def __init__(self, nxt=inet.IPPROTO_TCP, size=0,
                  type_=3, seg=0, cmpi=0, cmpe=0, adrs=None):
@@ -451,11 +458,11 @@ class routing_type3(header):
             form_e = "%ds" % adrs_len_e
             while data < (header_len - (adrs_len_e + pad)):
                 (adr, ) = struct.unpack_from(form_i, buf[data:])
-                adr = ('\x00' * cmpi) + adr
+                adr = (b'\x00' * cmpi) + adr
                 adrs.append(addrconv.ipv6.bin_to_text(adr))
                 data += adrs_len_i
             (adr, ) = struct.unpack_from(form_e, buf[data:])
-            adr = ('\x00' * cmpe) + adr
+            adr = (b'\x00' * cmpe) + adr
             adrs.append(addrconv.ipv6.bin_to_text(adr))
         return cls(nxt, size, type_, seg, cmpi, cmpe, adrs)
 

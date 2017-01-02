@@ -1,4 +1,4 @@
-import io
+import six
 
 
 class RouteFormatterMixin(object):
@@ -17,7 +17,7 @@ class RouteFormatterMixin(object):
 
     @classmethod
     def _format_family(cls, dest_list):
-        msg = io.StringIO()
+        msg = six.StringIO()
 
         def _append_path_info(buff, path, is_best, show_prefix):
             aspath = path.get('aspath')
@@ -41,7 +41,7 @@ class RouteFormatterMixin(object):
                 prefix = path.get('prefix')
 
             # Append path info to String buffer.
-            buff.write(cls.fmtstr.format(path_status, prefix, labels,
+            buff.write(cls.fmtstr.format(path_status, prefix, str(labels),
                                          next_hop, bpr, str(med),
                                          str(localpref),
                                          ' '.join(map(str, aspath))))

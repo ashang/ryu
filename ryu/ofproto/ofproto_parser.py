@@ -14,26 +14,32 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import six
+
 import base64
 import collections
 import logging
 import struct
-import sys
 import functools
 
 from ryu import exception
 from ryu import utils
 from ryu.lib import stringify
 
-from . import ofproto_common
+from ryu.ofproto import ofproto_common
 
 LOG = logging.getLogger('ryu.ofproto.ofproto_parser')
+
+# This is merely for API compatibility on python2
+if six.PY3:
+    buffer = bytes
 
 
 def header(buf):
     assert len(buf) >= ofproto_common.OFP_HEADER_SIZE
     # LOG.debug('len %d bufsize %d', len(buf), ofproto.OFP_HEADER_SIZE)
-    return struct.unpack_from(ofproto_common.OFP_HEADER_PACK_STR, buffer(buf))
+    return struct.unpack_from(ofproto_common.OFP_HEADER_PACK_STR,
+                              six.binary_type(buf))
 
 
 _MSG_PARSERS = {}
@@ -47,21 +53,30 @@ def register_msg_parser(version):
 
 
 def msg(datapath, version, msg_type, msg_len, xid, buf):
-    assert len(buf) >= msg_len
+    exp = None
+    try:
+        assert len(buf) >= msg_len
+    except AssertionError as e:
+        exp = e
 
     msg_parser = _MSG_PARSERS.get(version)
     if msg_parser is None:
         raise exception.OFPUnknownVersion(version=version)
 
     try:
-        return msg_parser(datapath, version, msg_type, msg_len, xid, buf)
+        msg = msg_parser(datapath, version, msg_type, msg_len, xid, buf)
+    except exception.OFPTruncatedMessage as e:
+        raise e
     except:
         LOG.exception(
-            'Encounter an error during parsing OpenFlow packet from switch.'
-            'This implies switch sending a malformed OpenFlow packet.'
+            'Encountered an error while parsing OpenFlow packet from switch. '
+            'This implies the switch sent a malformed OpenFlow packet. '
             'version 0x%02x msg_type %d msg_len %d xid %d buf %s',
             version, msg_type, msg_len, xid, utils.hex_array(buf))
-        return None
+        msg = None
+    if exp:
+        raise exp
+    return msg
 
 
 def create_list_of_base_attributes(f):
@@ -164,10 +179,10 @@ class MsgBase(StringifyMixin):
 
     def __str__(self):
         def hexify(x):
-            return str(None) if x is None else '0x%x' % x
-        buf = 'version: %s msg_type %s xid %s ' % (hexify(self.version),
-                                                   hexify(self.msg_type),
-                                                   hexify(self.xid))
+            return hex(x) if isinstance(x, six.integer_types) else x
+        buf = 'version=%s,msg_type=%s,msg_len=%s,xid=%s,' %\
+              (hexify(self.version), hexify(self.msg_type),
+               hexify(self.msg_len), hexify(self.xid))
         return buf + StringifyMixin.__str__(self)
 
     @classmethod

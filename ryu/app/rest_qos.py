@@ -18,10 +18,11 @@ import logging
 import json
 import re
 
-from webob import Response
-
 from ryu.app import conf_switch_key as cs_key
-from ryu.app.wsgi import ControllerBase, WSGIApplication, route
+from ryu.app.wsgi import ControllerBase
+from ryu.app.wsgi import Response
+from ryu.app.wsgi import route
+from ryu.app.wsgi import WSGIApplication
 from ryu.base import app_manager
 from ryu.controller import conf_switch
 from ryu.controller import ofp_event
@@ -193,7 +194,6 @@ REST_SWITCHID = 'switch_id'
 REST_COMMAND_RESULT = 'command_result'
 REST_PRIORITY = 'priority'
 REST_VLANID = 'vlan_id'
-REST_DL_VLAN = 'dl_vlan'
 REST_PORT_NAME = 'port_name'
 REST_QUEUE_TYPE = 'type'
 REST_QUEUE_MAX_RATE = 'max_rate'
@@ -507,8 +507,8 @@ class QoSController(ControllerBase):
 
     def _access_switch(self, req, switchid, vlan_id, func, waiters):
         try:
-            rest = json.loads(req.body) if req.body else {}
-        except SyntaxError:
+            rest = req.json if req.body else {}
+        except ValueError:
             QoSController._LOGGER.debug('invalid syntax %s', req.body)
             return Response(status=400)
 
@@ -1128,20 +1128,20 @@ class Match(object):
 class Action(object):
 
     @staticmethod
-    def to_rest(openflow):
-        if REST_ACTION in openflow:
+    def to_rest(flow):
+        if REST_ACTION in flow:
             actions = []
-            for action in openflow[REST_ACTION]:
-                field_value = re.search('SET_FIELD: {ip_dscp:(\d+)', action)
+            for act in flow[REST_ACTION]:
+                field_value = re.search('SET_FIELD: \{ip_dscp:(\d+)', act)
                 if field_value:
                     actions.append({REST_ACTION_MARK: field_value.group(1)})
-                meter_value = re.search('METER:(\d+)', action)
+                meter_value = re.search('METER:(\d+)', act)
                 if meter_value:
                     actions.append({REST_ACTION_METER: meter_value.group(1)})
-                queue_value = re.search('SET_QUEUE:(\d+)', action)
+                queue_value = re.search('SET_QUEUE:(\d+)', act)
                 if queue_value:
                     actions.append({REST_ACTION_QUEUE: queue_value.group(1)})
-                action = {REST_ACTION: actions}
+            action = {REST_ACTION: actions}
         else:
             action = {REST_ACTION: 'Unknown action type.'}
 

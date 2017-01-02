@@ -15,6 +15,8 @@
 
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 
+import six
+
 import binascii
 import unittest
 from nose.tools import *
@@ -26,6 +28,9 @@ from ryu.ofproto import ofproto_v1_0, ofproto_v1_0_parser
 
 import logging
 LOG = logging.getLogger(__name__)
+
+if six.PY3:
+    buffer = bytes
 
 
 class TestOfproto_Parser(unittest.TestCase):
@@ -164,7 +169,7 @@ class TestMsgBase(unittest.TestCase):
         version = ofproto_v1_0.OFP_VERSION
         msg_len = ofproto_v1_0.OFP_HEADER_SIZE
         xid = 2183948390
-        data = '\x00\x01\x02\x03'
+        data = b'\x00\x01\x02\x03'
 
         fmt = ofproto_v1_0.OFP_HEADER_PACK_STR
         buf = struct.pack(fmt, version, msg_type, msg_len, xid) \
@@ -180,20 +185,18 @@ class TestMsgBase(unittest.TestCase):
         eq_(buffer(buf), res.buf)
 
         # test __str__()
-        list_ = ('version:', 'msg_type', 'xid')
+        list_ = ('version', 'msg_type', 'msg_len', 'xid')
         check = {}
-        str_ = str(res)
-        str_ = str_.rsplit()
+        for s in str(res).rsplit(','):
+            if '=' in s:
+                (k, v,) = s.rsplit('=')
+                if k in list_:
+                    check[k] = v
 
-        i = 0
-        for s in str_:
-            if s in list_:
-                check[str_[i]] = str_[i + 1]
-            i += 1
-
-        eq_(hex(ofproto_v1_0.OFP_VERSION).find(check['version:']), 0)
-        eq_(hex(ofproto_v1_0.OFPT_HELLO).find(check['msg_type']), 0)
-        eq_(hex(xid).find(check['xid']), 0)
+        eq_(hex(ofproto_v1_0.OFP_VERSION), check['version'])
+        eq_(hex(ofproto_v1_0.OFPT_HELLO), check['msg_type'])
+        eq_(hex(msg_len), check['msg_len'])
+        eq_(hex(xid), check['xid'])
 
         return True
 

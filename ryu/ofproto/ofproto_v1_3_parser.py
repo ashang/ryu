@@ -41,18 +41,22 @@ The following extensions are not implemented yet.
 """
 
 import struct
-import itertools
+import base64
+
+import six
 
 from ryu.lib import addrconv
 from ryu.lib import mac
 from ryu.lib.pack_utils import msg_pack_into
+from ryu.lib.packet import packet
+from ryu import exception
 from ryu import utils
-from ryu.ofproto.ofproto_parser import StringifyMixin, MsgBase, msg_str_attr
-from . import ether
-from . import nicira_ext
-from . import ofproto_parser
-from . import ofproto_common
-from . import ofproto_v1_3 as ofproto
+from ryu.ofproto.ofproto_parser import StringifyMixin, MsgBase
+from ryu.ofproto import ether
+from ryu.ofproto import nx_actions
+from ryu.ofproto import ofproto_parser
+from ryu.ofproto import ofproto_common
+from ryu.ofproto import ofproto_v1_3 as ofproto
 
 import logging
 LOG = logging.getLogger('ryu.ofproto.ofproto_v1_3_parser')
@@ -99,7 +103,8 @@ class OFPHello(MsgBase):
     elements   list of ``OFPHelloElemVersionBitmap`` instance
     ========== =========================================================
     """
-    def __init__(self, datapath, elements=[]):
+    def __init__(self, datapath, elements=None):
+        elements = elements if elements else []
         super(OFPHello, self).__init__(datapath)
         self.elements = elements
 
@@ -228,7 +233,7 @@ class OFPErrorMsg(MsgBase):
 
     @classmethod
     def parser(cls, datapath, version, msg_type, msg_len, xid, buf):
-        type_, = struct.unpack_from('!H', buffer(buf),
+        type_, = struct.unpack_from('!H', six.binary_type(buf),
                                     ofproto.OFP_HEADER_SIZE)
         if type_ == ofproto.OFPET_EXPERIMENTER:
             return OFPErrorExperimenterMsg.parser(datapath, version, msg_type,
@@ -294,7 +299,6 @@ class OFPEchoRequest(MsgBase):
     Example::
 
         def send_echo_request(self, datapath, data):
-            ofp = datapath.ofproto
             ofp_parser = datapath.ofproto_parser
 
             req = ofp_parser.OFPEchoRequest(datapath, data)
@@ -340,7 +344,6 @@ class OFPEchoReply(MsgBase):
     Example::
 
         def send_echo_reply(self, datapath, data):
-            ofp = datapath.ofproto
             ofp_parser = datapath.ofproto_parser
 
             reply = ofp_parser.OFPEchoReply(datapath, data)
@@ -729,6 +732,12 @@ class OFPMatch(StringifyMixin):
     pbb_isid         Integer 24bit   PBB I-SID
     tunnel_id        Integer 64bit   Logical Port Metadata
     ipv6_exthdr      Integer 16bit   IPv6 Extension Header pseudo-field
+    pbb_uca          Integer 8bit    PBB UCA header field
+                                     (EXT-256 Old version of ONF Extension)
+    tcp_flags        Integer 16bit   TCP flags
+                                     (EXT-109 ONF Extension)
+    actset_output    Integer 32bit   Output port from action set metadata
+                                     (EXT-233 ONF Extension)
     ================ =============== ==================================
 
     Example::
@@ -745,6 +754,11 @@ class OFPMatch(StringifyMixin):
         ...     print match['ipv6_src']
         ...
         ('2001:db8:bd05:1d2:288a:1fc0:1:10ee', 'ffff:ffff:ffff:ffff::')
+
+    .. Note::
+
+        For the list of the supported Nicira experimenter matches,
+        please refer to :ref:`ryu.ofproto.nx_match <nx_match_structures>`.
 
     .. Note::
 
@@ -834,7 +848,8 @@ class OFPMatch(StringifyMixin):
                       in kwargs.items()]
             # assumption: sorting by OXM type values makes fields
             # meet ordering requirements (eg. eth_type before ipv4_src)
-            fields.sort()
+            fields.sort(
+                key=lambda x: x[0][0] if isinstance(x[0], tuple) else x[0])
             self._fields2 = [ofproto.oxm_to_user(n, v, m) for (n, v, m)
                              in fields]
 
@@ -846,6 +861,9 @@ class OFPMatch(StringifyMixin):
 
     def iteritems(self):
         return iter(dict(self._fields2).items())
+
+    def items(self):
+        return self._fields2
 
     def get(self, key, default=None):
         return dict(self._fields2).get(key, default)
@@ -865,7 +883,7 @@ class OFPMatch(StringifyMixin):
             # serialize and parse to fill OFPMatch._fields2
             buf = bytearray()
             o2.serialize(buf, 0)
-            o = OFPMatch.parser(str(buf), 0)
+            o = OFPMatch.parser(six.binary_type(buf), 0)
         else:
             o = self
 
@@ -890,7 +908,7 @@ class OFPMatch(StringifyMixin):
         # serialize and parse to fill OFPMatch.fields
         buf = bytearray()
         o.serialize(buf, 0)
-        return OFPMatch.parser(str(buf), 0)
+        return OFPMatch.parser(six.binary_type(buf), 0)
 
     def __str__(self):
         # XXX old api compat
@@ -901,7 +919,7 @@ class OFPMatch(StringifyMixin):
             # serialize and parse to fill OFPMatch._fields2
             buf = bytearray()
             o2.serialize(buf, 0)
-            o = OFPMatch.parser(str(buf), 0)
+            o = OFPMatch.parser(six.binary_type(buf), 0)
         else:
             o = self
         return super(OFPMatch, o).__str__()
@@ -1252,17 +1270,28 @@ class OFPMatch(StringifyMixin):
         offset += 4
         length -= 4
 
+        exc = None
+        residue = None
         # XXXcompat
-        cls.parser_old(match, buf, offset, length)
+        try:
+            cls.parser_old(match, buf, offset, length)
+        except struct.error as e:
+            exc = e
 
         fields = []
-        while length > 0:
-            n, value, mask, field_len = ofproto.oxm_parse(buf, offset)
-            k, uv = ofproto.oxm_to_user(n, value, mask)
-            fields.append((k, uv))
-            offset += field_len
-            length -= field_len
+        try:
+            while length > 0:
+                n, value, mask, field_len = ofproto.oxm_parse(buf, offset)
+                k, uv = ofproto.oxm_to_user(n, value, mask)
+                fields.append((k, uv))
+                offset += field_len
+                length -= field_len
+        except struct.error as e:
+            exc = e
+            residue = buf[offset:]
         match._fields2 = fields
+        if exc is not None:
+            raise exception.OFPTruncatedMessage(match, residue, exc)
         return match
 
     @staticmethod
@@ -1435,7 +1464,7 @@ class OFPMatch(StringifyMixin):
     def set_ipv6_src_masked(self, src, mask):
         self._wc.ft_set(ofproto.OFPXMT_OFB_IPV6_SRC)
         self._wc.ipv6_src_mask = mask
-        self._flow.ipv6_src = [x & y for (x, y) in itertools.izip(src, mask)]
+        self._flow.ipv6_src = [x & y for (x, y) in zip(src, mask)]
 
     def set_ipv6_dst(self, dst):
         self._wc.ft_set(ofproto.OFPXMT_OFB_IPV6_DST)
@@ -1444,7 +1473,7 @@ class OFPMatch(StringifyMixin):
     def set_ipv6_dst_masked(self, dst, mask):
         self._wc.ft_set(ofproto.OFPXMT_OFB_IPV6_DST)
         self._wc.ipv6_dst_mask = mask
-        self._flow.ipv6_dst = [x & y for (x, y) in itertools.izip(dst, mask)]
+        self._flow.ipv6_dst = [x & y for (x, y) in zip(dst, mask)]
 
     def set_ipv6_flabel(self, flabel):
         self.set_ipv6_flabel_masked(flabel, UINT32_MAX)
@@ -1514,6 +1543,123 @@ class OFPMatch(StringifyMixin):
         self._flow.ipv6_exthdr = hdr
 
 
+class OFPPropUnknown(StringifyMixin):
+    def __init__(self, type_=None, length=None, buf=None):
+        self.buf = buf
+
+    @classmethod
+    def parser(cls, buf):
+        return cls(buf=buf)
+
+
+class OFPPropBase(StringifyMixin):
+    _PACK_STR = '!HH'
+    # _TYPES = {} must be an attribute of subclass
+
+    def __init__(self, type_, length=None):
+        self.type = type_
+        self.length = length
+
+    @classmethod
+    def register_type(cls, type_):
+        def _register_type(subcls):
+            cls._TYPES[type_] = subcls
+            return subcls
+        return _register_type
+
+    @classmethod
+    def parse(cls, buf):
+        (type_, length) = struct.unpack_from(cls._PACK_STR, buf, 0)
+        rest = buf[utils.round_up(length, 8):]
+        try:
+            subcls = cls._TYPES[type_]
+        except KeyError:
+            subcls = OFPPropUnknown
+        prop = subcls.parser(buf)
+        prop.type = type_
+        prop.length = length
+        return prop, rest
+
+    @classmethod
+    def get_rest(cls, buf):
+        (type_, length) = struct.unpack_from(cls._PACK_STR, buf, 0)
+        offset = struct.calcsize(cls._PACK_STR)
+        return buf[offset:length]
+
+    def serialize(self):
+        # Body
+        # serialize_body should be implemented by subclass
+        body = bytearray()
+        body += self.serialize_body()
+
+        # fixup
+        self.length = len(body) + struct.calcsize(self._PACK_STR)
+
+        # Header
+        buf = bytearray()
+        msg_pack_into(self._PACK_STR, buf, 0, self.type, self.length)
+        buf += body
+
+        # Pad
+        pad_len = utils.round_up(self.length, 8) - self.length
+        msg_pack_into("%dx" % pad_len, buf, len(buf))
+
+        return buf
+
+
+class OFPPropCommonExperimenter4ByteData(StringifyMixin):
+    _PACK_STR = '!HHII'
+    _EXPERIMENTER_DATA_PACK_STR = '!I'
+    _EXPERIMENTER_DATA_SIZE = 4
+
+    def __init__(self, type_=None, length=None, experimenter=None,
+                 exp_type=None, data=bytearray()):
+        self.type = type_
+        self.length = length
+        self.experimenter = experimenter
+        self.exp_type = exp_type
+        self.data = data
+
+    @classmethod
+    def parser(cls, buf):
+        (type_, length, experimenter, exp_type) = struct.unpack_from(
+            ofproto.OFP_PROP_EXPERIMENTER_PACK_STR, buf, 0)
+
+        rest = buf[ofproto.OFP_PROP_EXPERIMENTER_SIZE:length]
+        data = []
+        while rest:
+            (d,) = struct.unpack_from(
+                cls._EXPERIMENTER_DATA_PACK_STR, rest, 0)
+            data.append(d)
+            rest = rest[cls._EXPERIMENTER_DATA_SIZE:]
+
+        return cls(type_, length, experimenter, exp_type, data)
+
+    def serialize(self):
+        offset = 0
+        bin_data = bytearray()
+        for d in self.data:
+            msg_pack_into(self._EXPERIMENTER_DATA_PACK_STR,
+                          bin_data, offset, d)
+            offset += self._EXPERIMENTER_DATA_SIZE
+
+        # fixup
+        self.length = struct.calcsize(self._PACK_STR)
+        self.length += len(bin_data)
+
+        buf = bytearray()
+        msg_pack_into(self._PACK_STR, buf,
+                      0, self.type, self.length, self.experimenter,
+                      self.exp_type)
+        buf += bin_data
+
+        # Pad
+        pad_len = utils.round_up(self.length, 8) - self.length
+        msg_pack_into("%dx" % pad_len, buf, len(buf))
+
+        return buf
+
+
 class OFPMatchField(StringifyMixin):
     _FIELDS_HEADERS = {}
 
@@ -1555,7 +1701,6 @@ class OFPMatchField(StringifyMixin):
 
     @classmethod
     def field_parser(cls, header, buf, offset):
-        hasmask = (header >> 8) & 1
         mask = None
         if ofproto.oxm_tlv_header_extract_hasmask(header):
             pack_str = '!' + cls.pack_str[1:] * 2
@@ -2024,7 +2169,6 @@ class MTPbbIsid(OFPMatchField):
 
     @classmethod
     def field_parser(cls, header, buf, offset):
-        hasmask = (header >> 8) & 1
         mask = None
         if ofproto.oxm_tlv_header_extract_hasmask(header):
             pack_str = '!' + cls.pack_str[1:] * 2
@@ -2097,6 +2241,7 @@ class OFPPacketIn(MsgBase):
         @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
         def packet_in_handler(self, ev):
             msg = ev.msg
+            dp = msg.datapath
             ofp = dp.ofproto
 
             if msg.reason == ofp.OFPR_NO_MATCH:
@@ -2248,6 +2393,36 @@ class OFPFlowRemoved(MsgBase):
 class OFPPort(ofproto_parser.namedtuple('OFPPort', (
         'port_no', 'hw_addr', 'name', 'config', 'state', 'curr',
         'advertised', 'supported', 'peer', 'curr_speed', 'max_speed'))):
+    """
+    Description of a port
+
+    ========== =========================================================
+    Attribute  Description
+    ========== =========================================================
+    port_no    Port number and it uniquely identifies a port within
+               a switch.
+    hw_addr    MAC address for the port.
+    name       Null-terminated string containing a human-readable name
+               for the interface.
+    config     Bitmap of port configration flags.
+
+               | OFPPC_PORT_DOWN
+               | OFPPC_NO_RECV
+               | OFPPC_NO_FWD
+               | OFPPC_NO_PACKET_IN
+    state      Bitmap of port state flags.
+
+               | OFPPS_LINK_DOWN
+               | OFPPS_BLOCKED
+               | OFPPS_LIVE
+    curr       Current features.
+    advertised Features being advertised by the port.
+    supported  Features supported by the port.
+    peer       Features advertised by peer.
+    curr_speed Current port bitrate in kbps.
+    max_speed  Max port bitrate in kbps.
+    ========== =========================================================
+    """
 
     _TYPE = {
         'ascii': [
@@ -2267,7 +2442,7 @@ class OFPPort(ofproto_parser.namedtuple('OFPPort', (
         i = cls._fields.index('hw_addr')
         port[i] = addrconv.mac.bin_to_text(port[i])
         i = cls._fields.index('name')
-        port[i] = port[i].rstrip('\0')
+        port[i] = port[i].rstrip(b'\0')
         ofpport = cls(*port)
         ofpport.length = ofproto.OFP_PORT_SIZE
         return ofpport
@@ -2343,7 +2518,8 @@ class OFPPacketOut(MsgBase):
     buffer_id        ID assigned by datapath (OFP_NO_BUFFER if none)
     in_port          Packet's input port or ``OFPP_CONTROLLER``
     actions          list of OpenFlow action class
-    data             Packet data
+    data             Packet data of a binary type value or
+                     an instances of packet.Packet.
     ================ ======================================================
 
     Example::
@@ -2378,13 +2554,35 @@ class OFPPacketOut(MsgBase):
 
         if self.data is not None:
             assert self.buffer_id == 0xffffffff
-            self.buf += self.data
+            if isinstance(self.data, packet.Packet):
+                self.data.serialize()
+                self.buf += self.data.data
+            else:
+                self.buf += self.data
 
         msg_pack_into(ofproto.OFP_PACKET_OUT_PACK_STR,
                       self.buf, ofproto.OFP_HEADER_SIZE,
                       self.buffer_id, self.in_port, self.actions_len)
 
+    @classmethod
+    def from_jsondict(cls, dict_, decode_string=base64.b64decode,
+                      **additional_args):
+        if isinstance(dict_['data'], dict):
+            data = dict_.pop('data')
+            ins = super(OFPPacketOut, cls).from_jsondict(dict_,
+                                                         decode_string,
+                                                         **additional_args)
+            ins.data = packet.Packet.from_jsondict(data['Packet'])
+            dict_['data'] = data
+        else:
+            ins = super(OFPPacketOut, cls).from_jsondict(dict_,
+                                                         decode_string,
+                                                         **additional_args)
 
+        return ins
+
+
+@_register_parser
 @_set_msg_type(ofproto.OFPT_FLOW_MOD)
 class OFPFlowMod(MsgBase):
     """
@@ -2457,7 +2655,8 @@ class OFPFlowMod(MsgBase):
                  buffer_id=ofproto.OFP_NO_BUFFER,
                  out_port=0, out_group=0, flags=0,
                  match=None,
-                 instructions=[]):
+                 instructions=None):
+        instructions = instructions if instructions else []
         super(OFPFlowMod, self).__init__(datapath)
         self.cookie = cookie
         self.cookie_mask = cookie_mask
@@ -2495,6 +2694,48 @@ class OFPFlowMod(MsgBase):
         for inst in self.instructions:
             inst.serialize(self.buf, offset)
             offset += inst.len
+
+    @classmethod
+    def parser(cls, datapath, version, msg_type, msg_len, xid, buf):
+        msg = super(OFPFlowMod, cls).parser(
+            datapath, version, msg_type, msg_len, xid, buf)
+
+        (msg.cookie, msg.cookie_mask, msg.table_id,
+         msg.command, msg.idle_timeout, msg.hard_timeout,
+         msg.priority, msg.buffer_id, msg.out_port,
+         msg.out_group, msg.flags) = struct.unpack_from(
+            ofproto.OFP_FLOW_MOD_PACK_STR0, msg.buf,
+            ofproto.OFP_HEADER_SIZE)
+        offset = ofproto.OFP_FLOW_MOD_SIZE - ofproto.OFP_HEADER_SIZE
+
+        try:
+            msg.match = OFPMatch.parser(buf, offset)
+        except exception.OFPTruncatedMessage as e:
+            msg.match = e.ofpmsg
+            e.ofpmsg = msg
+            raise e
+
+        offset += utils.round_up(msg.match.length, 8)
+
+        instructions = []
+        try:
+            while offset < msg_len:
+                i = OFPInstruction.parser(buf, offset)
+                instructions.append(i)
+                offset += i.len
+        except exception.OFPTruncatedMessage as e:
+            instructions.append(e.ofpmsg)
+            msg.instructions = instructions
+            e.ofpmsg = msg
+            raise e
+        except struct.error as e:
+            msg.instructions = instructions
+            raise exception.OFPTruncatedMessage(ofpmsg=msg,
+                                                residue=buf[offset:],
+                                                original_exception=e)
+        msg.instructions = instructions
+
+        return msg
 
 
 class OFPInstruction(StringifyMixin):
@@ -2618,14 +2859,22 @@ class OFPInstructionActions(OFPInstruction):
         offset += ofproto.OFP_INSTRUCTION_ACTIONS_SIZE
         actions = []
         actions_len = len_ - ofproto.OFP_INSTRUCTION_ACTIONS_SIZE
-        while actions_len > 0:
-            a = OFPAction.parser(buf, offset)
-            actions.append(a)
-            actions_len -= a.len
-            offset += a.len
+        exc = None
+        try:
+            while actions_len > 0:
+                a = OFPAction.parser(buf, offset)
+                actions.append(a)
+                actions_len -= a.len
+                offset += a.len
+        except struct.error as e:
+            exc = e
 
         inst = cls(type_, actions)
         inst.len = len_
+        if exc is not None:
+            raise exception.OFPTruncatedMessage(ofpmsg=inst,
+                                                residue=buf[offset:],
+                                                original_exception=exc)
         return inst
 
     def serialize(self, buf, offset):
@@ -3046,7 +3295,7 @@ class OFPActionSetField(OFPAction):
 
     Example::
 
-        set_field = OFPActionSetField(eth_src="00:00:00:00:00")
+        set_field = OFPActionSetField(eth_src="00:00:00:00:00:00")
     """
     def __init__(self, field=None, **kwargs):
         # old api
@@ -3063,7 +3312,7 @@ class OFPActionSetField(OFPAction):
             assert len(kwargs) == 1
             key = list(kwargs.keys())[0]
             value = kwargs[key]
-            assert isinstance(key, (str, unicode))
+            assert isinstance(key, (str, six.text_type))
             assert not isinstance(value, tuple)  # no mask
             self.key = key
             self.value = value
@@ -3110,19 +3359,11 @@ class OFPActionSetField(OFPAction):
         return not hasattr(self, 'value')
 
     def to_jsondict(self):
-        # XXX old api compat
-        if self._composed_with_old_api():
-            # copy object first because serialize_old is destructive
-            o2 = OFPActionSetField(self.field)
-            # serialize and parse to fill new fields
-            buf = bytearray()
-            o2.serialize(buf, 0)
-            o = OFPActionSetField.parser(str(buf), 0)
-        else:
-            o = self
         return {
             self.__class__.__name__: {
-                'field': ofproto.oxm_to_jsondict(self.key, self.value)
+                'field': ofproto.oxm_to_jsondict(self.key, self.value),
+                "len": self.len,
+                "type": self.type
             }
         }
 
@@ -3135,7 +3376,7 @@ class OFPActionSetField(OFPAction):
         # serialize and parse to fill old attributes
         buf = bytearray()
         o.serialize(buf, 0)
-        return OFPActionSetField.parser(str(buf), 0)
+        return OFPActionSetField.parser(six.binary_type(buf), 0)
 
     # XXX old api compat
     def __str__(self):
@@ -3146,7 +3387,7 @@ class OFPActionSetField(OFPAction):
             # serialize and parse to fill new fields
             buf = bytearray()
             o2.serialize(buf, 0)
-            o = OFPActionSetField.parser(str(buf), 0)
+            o = OFPActionSetField.parser(six.binary_type(buf), 0)
         else:
             o = self
         return super(OFPActionSetField, o).__str__()
@@ -3204,12 +3445,6 @@ class OFPActionPopPbb(OFPAction):
             ofproto.OFP_ACTION_HEADER_PACK_STR, buf, offset)
         return cls()
 
-    @classmethod
-    def parser(cls, buf, offset):
-        (type_, len_) = struct.unpack_from(
-            ofproto.OFP_ACTION_HEADER_PACK_STR, buf, offset)
-        return cls()
-
 
 @OFPAction.register_action_type(
     ofproto.OFPAT_EXPERIMENTER,
@@ -3225,6 +3460,11 @@ class OFPActionExperimenter(OFPAction):
     ================ ======================================================
     experimenter     Experimenter ID
     ================ ======================================================
+
+    .. Note::
+
+        For the list of the supported Nicira experimenter actions,
+        please refer to :ref:`ryu.ofproto.nx_actions <nx_actions_structures>`.
     """
 
     def __init__(self, experimenter):
@@ -3240,7 +3480,7 @@ class OFPActionExperimenter(OFPAction):
         data = buf[(offset + ofproto.OFP_ACTION_EXPERIMENTER_HEADER_SIZE
                     ): offset + len_]
         if experimenter == ofproto_common.NX_EXPERIMENTER_ID:
-            obj = NXAction.parse(data)
+            obj = NXAction.parse(data)  # noqa
         else:
             obj = OFPActionExperimenterUnknown(experimenter, data)
         obj.len = len_
@@ -3360,7 +3600,8 @@ class OFPGroupMod(MsgBase):
             datapath.send_msg(req)
     """
     def __init__(self, datapath, command=ofproto.OFPGC_ADD,
-                 type_=ofproto.OFPGT_ALL, group_id=0, buckets=[]):
+                 type_=ofproto.OFPGT_ALL, group_id=0, buckets=None):
+        buckets = buckets if buckets else []
         super(OFPGroupMod, self).__init__(datapath)
         self.command = command
         self.type = type_
@@ -3491,7 +3732,8 @@ class OFPMeterMod(MsgBase):
     ================ ======================================================
     """
     def __init__(self, datapath, command=ofproto.OFPMC_ADD,
-                 flags=ofproto.OFPMF_KBPS, meter_id=1, bands=[]):
+                 flags=ofproto.OFPMF_KBPS, meter_id=1, bands=None):
+        bands = bands if bands else []
         super(OFPMeterMod, self).__init__(datapath)
         self.command = command
         self.flags = flags
@@ -3527,7 +3769,6 @@ class OFPTableMod(MsgBase):
     Example::
 
         def send_table_mod(self, datapath):
-            ofp = datapath.ofproto
             ofp_parser = datapath.ofproto_parser
 
             req = ofp_parser.OFPTableMod(datapath, 1, 3)
@@ -3614,7 +3855,7 @@ class OFPMultipartReply(MsgBase):
     @classmethod
     def parser(cls, datapath, version, msg_type, msg_len, xid, buf):
         type_, flags = struct.unpack_from(
-            ofproto.OFP_MULTIPART_REPLY_PACK_STR, buffer(buf),
+            ofproto.OFP_MULTIPART_REPLY_PACK_STR, six.binary_type(buf),
             ofproto.OFP_HEADER_SIZE)
         stats_type_cls = cls._STATS_MSG_TYPES.get(type_)
         msg = super(OFPMultipartReply, stats_type_cls).parser(
@@ -3654,7 +3895,7 @@ class OFPDescStats(ofproto_parser.namedtuple('OFPDescStats', (
         desc = struct.unpack_from(ofproto.OFP_DESC_PACK_STR,
                                   buf, offset)
         desc = list(desc)
-        desc = map(lambda x: x.rstrip('\0'), desc)
+        desc = [x.rstrip(b'\0') for x in desc]
         stats = cls(*desc)
         stats.length = ofproto.OFP_DESC_SIZE
         return stats
@@ -3677,7 +3918,6 @@ class OFPDescStatsRequest(OFPMultipartRequest):
     Example::
 
         def send_desc_stats_request(self, datapath):
-            ofp = datapath.ofproto
             ofp_parser = datapath.ofproto_parser
 
             req = ofp_parser.OFPDescStatsRequest(datapath, 0)
@@ -3725,7 +3965,6 @@ class OFPFlowStats(StringifyMixin):
                  byte_count=None, match=None, instructions=None,
                  length=None):
         super(OFPFlowStats, self).__init__()
-        self.length = 0
         self.table_id = table_id
         self.duration_sec = duration_sec
         self.duration_nsec = duration_nsec
@@ -3738,6 +3977,7 @@ class OFPFlowStats(StringifyMixin):
         self.byte_count = byte_count
         self.match = match
         self.instructions = instructions
+        self.length = length
 
     @classmethod
     def parser(cls, buf, offset):
@@ -3999,7 +4239,6 @@ class OFPTableStatsRequest(OFPMultipartRequest):
     Example::
 
         def send_table_stats_request(self, datapath):
-            ofp = datapath.ofproto
             ofp_parser = datapath.ofproto_parser
 
             req = ofp_parser.OFPTableStatsRequest(datapath, 0)
@@ -4034,7 +4273,7 @@ class OFPTableStatsReply(OFPMultipartReply):
                               ' matched_count=%d' %
                               (stat.table_id, stat.active_count,
                                stat.lookup_count, stat.matched_count))
-             self.logger.debug('TableStats: %s', tables)
+            self.logger.debug('TableStats: %s', tables)
     """
     def __init__(self, datapath, type_=None, **kwargs):
         super(OFPTableStatsReply, self).__init__(datapath, **kwargs)
@@ -4127,7 +4366,7 @@ class OFPPortStatsReply(OFPMultipartReply):
                               stat.rx_frame_err, stat.rx_over_err,
                               stat.rx_crc_err, stat.collisions,
                               stat.duration_sec, stat.duration_nsec))
-        self.logger.debug('PortStats: %s', ports)
+            self.logger.debug('PortStats: %s', ports)
     """
     def __init__(self, datapath, type_=None, **kwargs):
         super(OFPPortStatsReply, self).__init__(datapath, **kwargs)
@@ -4377,7 +4616,6 @@ class OFPGroupDescStatsRequest(OFPMultipartRequest):
     Example::
 
         def send_group_desc_stats_request(self, datapath):
-            ofp = datapath.ofproto
             ofp_parser = datapath.ofproto_parser
 
             req = ofp_parser.OFPGroupDescStatsRequest(datapath, 0)
@@ -4412,7 +4650,7 @@ class OFPGroupDescStatsReply(OFPMultipartReply):
                              'buckets=%s' %
                              (stat.length, stat.type, stat.group_id,
                               stat.bucket))
-            self.logger.debug('GroupDescStats: %s', groups)
+            self.logger.debug('GroupDescStats: %s', descs)
     """
     def __init__(self, datapath, type_=None, **kwargs):
         super(OFPGroupDescStatsReply, self).__init__(datapath, **kwargs)
@@ -4452,7 +4690,6 @@ class OFPGroupFeaturesStatsRequest(OFPMultipartRequest):
     Example::
 
         def send_group_features_stats_request(self, datapath):
-            ofp = datapath.ofproto
             ofp_parser = datapath.ofproto_parser
 
             req = ofp_parser.OFPGroupFeaturesStatsRequest(datapath, 0)
@@ -4883,7 +5120,7 @@ class OFPMeterFeaturesStatsReply(OFPMultipartReply):
                                 (stat.max_meter, stat.band_types,
                                  stat.capabilities, stat.max_bands,
                                  stat.max_color))
-            self.logger.debug('MeterFeaturesStats: %s', configs)
+            self.logger.debug('MeterFeaturesStats: %s', features)
     """
     def __init__(self, datapath, type_=None, **kwargs):
         super(OFPMeterFeaturesStatsReply, self).__init__(datapath, **kwargs)
@@ -4921,7 +5158,7 @@ class OFPTableFeaturesStats(StringifyMixin):
          table_features.max_entries
          ) = struct.unpack_from(ofproto.OFP_TABLE_FEATURES_PACK_STR,
                                 buf, offset)
-        table_features.name = name.rstrip('\0')
+        table_features.name = name.rstrip(b'\0')
 
         props = []
         rest = buf[offset + ofproto.OFP_TABLE_FEATURES_SIZE:
@@ -4948,44 +5185,8 @@ class OFPTableFeaturesStats(StringifyMixin):
         return buf + bin_props
 
 
-class OFPTableFeatureProp(StringifyMixin):
-    _PACK_STR = '!HH'  # type, length
-    _TYPES = {}  # OFPTFPT_ -> class
-
-    def __init__(self, type_, length=None):
-        self.type = type_
-        self.length = length
-
-    @classmethod
-    def register_type(cls, type_):
-        def _register_type(subcls):
-            cls._TYPES[type_] = subcls
-            return subcls
-        return _register_type
-
-    @classmethod
-    def parse(cls, buf):
-        (type_, length,) = struct.unpack_from(cls._PACK_STR, buffer(buf), 0)
-        bin_prop = buf[struct.calcsize(cls._PACK_STR):length]
-        rest = buf[utils.round_up(length, 8):]
-        try:
-            subcls = cls._TYPES[type_]
-        except KeyError:
-            subcls = OFPTableFeaturePropUnknown
-        kwargs = subcls._parse_prop(bin_prop)
-        kwargs['type_'] = type_
-        kwargs['length'] = length
-        return subcls(**kwargs), rest
-
-    def serialize(self):
-        # fixup
-        bin_prop = self._serialize_prop()
-        self.length = struct.calcsize(self._PACK_STR) + len(bin_prop)
-
-        buf = bytearray()
-        msg_pack_into(self._PACK_STR, buf, 0, self.type, self.length)
-        pad_len = utils.round_up(self.length, 8) - self.length
-        return buf + bin_prop + pad_len * '\0'
+class OFPTableFeatureProp(OFPPropBase):
+    _TYPES = {}
 
 
 class OFPTableFeaturePropUnknown(OFPTableFeatureProp):
@@ -5014,7 +5215,8 @@ class OFPInstructionId(StringifyMixin):
 
     @classmethod
     def parse(cls, buf):
-        (type_, len_,) = struct.unpack_from(cls._PACK_STR, buffer(buf), 0)
+        (type_, len_,) = struct.unpack_from(cls._PACK_STR,
+                                            six.binary_type(buf), 0)
         rest = buf[len_:]
         return cls(type_=type_, len_=len_), rest
 
@@ -5030,25 +5232,25 @@ class OFPInstructionId(StringifyMixin):
 @OFPTableFeatureProp.register_type(ofproto.OFPTFPT_INSTRUCTIONS)
 @OFPTableFeatureProp.register_type(ofproto.OFPTFPT_INSTRUCTIONS_MISS)
 class OFPTableFeaturePropInstructions(OFPTableFeatureProp):
-    def __init__(self, type_, instruction_ids=[], length=None):
+    def __init__(self, type_=None, length=None, instruction_ids=None):
+        instruction_ids = instruction_ids if instruction_ids else []
         super(OFPTableFeaturePropInstructions, self).__init__(type_, length)
         self.instruction_ids = instruction_ids
 
     @classmethod
-    def _parse_prop(cls, buf):
-        rest = buf
+    def parser(cls, buf):
+        rest = cls.get_rest(buf)
         ids = []
         while rest:
             i, rest = OFPInstructionId.parse(rest)
             ids.append(i)
-        return {
-            'instruction_ids': ids,
-        }
+        return cls(instruction_ids=ids)
 
-    def _serialize_prop(self):
+    def serialize_body(self):
         bin_ids = bytearray()
         for i in self.instruction_ids:
             bin_ids += i.serialize()
+
         return bin_ids
 
 
@@ -5057,23 +5259,23 @@ class OFPTableFeaturePropInstructions(OFPTableFeatureProp):
 class OFPTableFeaturePropNextTables(OFPTableFeatureProp):
     _TABLE_ID_PACK_STR = '!B'
 
-    def __init__(self, type_, table_ids=[], length=None):
+    def __init__(self, type_=None, length=None, table_ids=None):
+        table_ids = table_ids if table_ids else []
         super(OFPTableFeaturePropNextTables, self).__init__(type_, length)
         self.table_ids = table_ids
 
     @classmethod
-    def _parse_prop(cls, buf):
-        rest = buf
+    def parser(cls, buf):
+        rest = cls.get_rest(buf)
         ids = []
         while rest:
-            (i,) = struct.unpack_from(cls._TABLE_ID_PACK_STR, buffer(rest), 0)
+            (i,) = struct.unpack_from(cls._TABLE_ID_PACK_STR,
+                                      six.binary_type(rest), 0)
             rest = rest[struct.calcsize(cls._TABLE_ID_PACK_STR):]
             ids.append(i)
-        return {
-            'table_ids': ids,
-        }
+        return cls(table_ids=ids)
 
-    def _serialize_prop(self):
+    def serialize_body(self):
         bin_ids = bytearray()
         for i in self.table_ids:
             bin_id = bytearray()
@@ -5101,7 +5303,8 @@ class OFPActionId(StringifyMixin):
 
     @classmethod
     def parse(cls, buf):
-        (type_, len_,) = struct.unpack_from(cls._PACK_STR, buffer(buf), 0)
+        (type_, len_,) = struct.unpack_from(cls._PACK_STR,
+                                            six.binary_type(buf), 0)
         rest = buf[len_:]
         return cls(type_=type_, len_=len_), rest
 
@@ -5119,22 +5322,21 @@ class OFPActionId(StringifyMixin):
 @OFPTableFeatureProp.register_type(ofproto.OFPTFPT_APPLY_ACTIONS)
 @OFPTableFeatureProp.register_type(ofproto.OFPTFPT_APPLY_ACTIONS_MISS)
 class OFPTableFeaturePropActions(OFPTableFeatureProp):
-    def __init__(self, type_, action_ids=[], length=None):
+    def __init__(self, type_=None, length=None, action_ids=None):
+        action_ids = action_ids if action_ids else []
         super(OFPTableFeaturePropActions, self).__init__(type_, length)
         self.action_ids = action_ids
 
     @classmethod
-    def _parse_prop(cls, buf):
-        rest = buf
+    def parser(cls, buf):
+        rest = cls.get_rest(buf)
         ids = []
         while rest:
             i, rest = OFPActionId.parse(rest)
             ids.append(i)
-        return {
-            'action_ids': ids,
-        }
+        return cls(action_ids=ids)
 
-    def _serialize_prop(self):
+    def serialize_body(self):
         bin_ids = bytearray()
         for i in self.action_ids:
             bin_ids += i.serialize()
@@ -5178,7 +5380,7 @@ class OFPOxmId(StringifyMixin):
 
     @classmethod
     def parse(cls, buf):
-        (oxm,) = struct.unpack_from(cls._PACK_STR, buffer(buf), 0)
+        (oxm,) = struct.unpack_from(cls._PACK_STR, six.binary_type(buf), 0)
         # oxm (32 bit) == class (16) | field (7) | hasmask (1) | length (8)
         # in case of experimenter OXMs, another 32 bit value
         # (experimenter id) follows.
@@ -5189,7 +5391,7 @@ class OFPOxmId(StringifyMixin):
         class_ = oxm >> (7 + 1 + 8)
         if class_ == ofproto.OFPXMC_EXPERIMENTER:
             (exp_id,) = struct.unpack_from(cls._EXPERIMENTER_ID_PACK_STR,
-                                           buffer(rest), 0)
+                                           six.binary_type(rest), 0)
             rest = rest[struct.calcsize(cls._EXPERIMENTER_ID_PACK_STR):]
             subcls = OFPExperimenterOxmId
             return subcls(type_=type_, exp_id=exp_id, hasmask=hasmask,
@@ -5229,22 +5431,21 @@ class OFPExperimenterOxmId(OFPOxmId):
 @OFPTableFeatureProp.register_type(ofproto.OFPTFPT_APPLY_SETFIELD)
 @OFPTableFeatureProp.register_type(ofproto.OFPTFPT_APPLY_SETFIELD_MISS)
 class OFPTableFeaturePropOxm(OFPTableFeatureProp):
-    def __init__(self, type_, oxm_ids=[], length=None):
+    def __init__(self, type_=None, length=None, oxm_ids=None):
+        oxm_ids = oxm_ids if oxm_ids else []
         super(OFPTableFeaturePropOxm, self).__init__(type_, length)
         self.oxm_ids = oxm_ids
 
     @classmethod
-    def _parse_prop(cls, buf):
-        rest = buf
+    def parser(cls, buf):
+        rest = cls.get_rest(buf)
         ids = []
         while rest:
             i, rest = OFPOxmId.parse(rest)
             ids.append(i)
-        return {
-            'oxm_ids': ids,
-        }
+        return cls(oxm_ids=ids)
 
-    def _serialize_prop(self):
+    def serialize_body(self):
         bin_ids = bytearray()
         for i in self.oxm_ids:
             bin_ids += i.serialize()
@@ -5253,51 +5454,8 @@ class OFPTableFeaturePropOxm(OFPTableFeatureProp):
 
 @OFPTableFeatureProp.register_type(ofproto.OFPTFPT_EXPERIMENTER)
 @OFPTableFeatureProp.register_type(ofproto.OFPTFPT_EXPERIMENTER_MISS)
-class OFPTableFeaturePropExperimenter(OFPTableFeatureProp):
-    _DATA_ELEMENT_PACK_STR = '!I'
-    _BODY_PACK_STR = '!II'
-
-    def __init__(self, type_, experimenter=None, exp_type=None,
-                 data=None, length=None):
-        self.type = type_
-        self.length = length
-        self.experimenter = experimenter
-        self.exp_type = exp_type
-        self.data = data
-
-    @classmethod
-    def _parse_prop(cls, buf):
-        (experimenter, exp_type) = struct.unpack_from(cls._BODY_PACK_STR,
-                                                      buf, 0)
-
-        # Parse trailing data, a list of 4-byte words
-        length = len(buf)
-        data = []
-        pack_size = struct.calcsize(cls._DATA_ELEMENT_PACK_STR)
-        offset = struct.calcsize(cls._BODY_PACK_STR)
-        while offset < length:
-            (word,) = struct.unpack_from(cls._DATA_ELEMENT_PACK_STR,
-                                         buf, offset)
-            data.append(word)
-            offset += pack_size
-
-        return {
-            'experimenter': experimenter,
-            'exp_type': exp_type,
-            'data': data,
-        }
-
-    def _serialize_prop(self):
-        # experimenter, exp_type
-        buf = bytearray()
-        msg_pack_into(self._BODY_PACK_STR, buf, 0, self.experimenter,
-                      self.exp_type)
-
-        # data
-        if len(self.data):
-            msg_pack_into('!%dI' % len(self.data), buf, len(buf), *self.data)
-
-        return buf
+class OFPTableFeaturePropExperimenter(OFPPropCommonExperimenter4ByteData):
+    pass
 
 
 @_set_stats_type(ofproto.OFPMP_TABLE_FEATURES, OFPTableFeaturesStats)
@@ -5316,8 +5474,9 @@ class OFPTableFeaturesStatsRequest(OFPMultipartRequest):
     ================ ======================================================
     """
     def __init__(self, datapath, flags=0,
-                 body=[],
+                 body=None,
                  type_=None):
+        body = body if body else []
         super(OFPTableFeaturesStatsRequest, self).__init__(datapath, flags)
         self.body = body
 
@@ -5386,7 +5545,7 @@ class OFPPortDescStatsReply(OFPMultipartReply):
     ================ ======================================================
     Attribute        Description
     ================ ======================================================
-    body             List of ``OFPPortDescStats`` instance
+    body             List of ``OFPPort`` instance
     ================ ======================================================
 
     Example::
@@ -5518,7 +5677,7 @@ class ONFFlowMonitorRequest(StringifyMixin):
                       self.out_port, self.table_id)
         buf += bin_match
         pad_len = utils.round_up(self.match_len, 8) - self.match_len
-        buf += pad_len * '\0'
+        buf += pad_len * b'\0'
         return buf
 
 
@@ -5533,8 +5692,9 @@ class ONFFlowMonitorStatsRequest(OFPExperimenterStatsRequestBase):
     body             List of ONFFlowMonitorRequest instances
     ================ ======================================================
     """
-    def __init__(self, datapath, flags, body=[],
+    def __init__(self, datapath, flags, body=None,
                  type_=None, experimenter=None, exp_type=None):
+        body = body if body else []
         super(ONFFlowMonitorStatsRequest,
               self).__init__(datapath, flags,
                              experimenter=ofproto_common.ONF_EXPERIMENTER_ID,
@@ -5649,13 +5809,13 @@ class OFPQueueProp(OFPQueuePropHeader):
     _QUEUE_PROP_PROPERTIES = {}
 
     @staticmethod
-    def register_queue_property(property_, len_):
-        def _register_queue_property(cls):
+    def register_property(property_, len_=None):
+        def _register_property(cls):
             cls.cls_property = property_
             cls.cls_len = len_
-            OFPQueueProp._QUEUE_PROP_PROPERTIES[cls.cls_property] = cls
+            OFPQueueProp._QUEUE_PROP_PROPERTIES[property_] = cls
             return cls
-        return _register_queue_property
+        return _register_property
 
     def __init__(self):
         cls = self.__class__
@@ -5668,13 +5828,18 @@ class OFPQueueProp(OFPQueuePropHeader):
             ofproto.OFP_QUEUE_PROP_HEADER_PACK_STR,
             buf, offset)
         cls_ = cls._QUEUE_PROP_PROPERTIES.get(property_)
-        offset += ofproto.OFP_QUEUE_PROP_HEADER_SIZE
-        return cls_.parser(buf, offset)
+        p = cls_.parser(buf, offset + ofproto.OFP_QUEUE_PROP_HEADER_SIZE)
+        p.property = property_
+        p.len = len_
+        if property_ == ofproto.OFPQT_EXPERIMENTER:
+            rest = buf[offset + ofproto.OFP_QUEUE_PROP_EXPERIMENTER_SIZE:
+                       offset + len_]
+            p.parse_experimenter_data(rest)
+        return p
 
 
-@OFPQueueProp.register_queue_property(
-    ofproto.OFPQT_MIN_RATE,
-    ofproto.OFP_QUEUE_PROP_MIN_RATE_SIZE)
+@OFPQueueProp.register_property(ofproto.OFPQT_MIN_RATE,
+                                ofproto.OFP_QUEUE_PROP_MIN_RATE_SIZE)
 class OFPQueuePropMinRate(OFPQueueProp):
     def __init__(self, rate, property_=None, len_=None):
         super(OFPQueuePropMinRate, self).__init__()
@@ -5687,9 +5852,8 @@ class OFPQueuePropMinRate(OFPQueueProp):
         return cls(rate)
 
 
-@OFPQueueProp.register_queue_property(
-    ofproto.OFPQT_MAX_RATE,
-    ofproto.OFP_QUEUE_PROP_MAX_RATE_SIZE)
+@OFPQueueProp.register_property(ofproto.OFPQT_MAX_RATE,
+                                ofproto.OFP_QUEUE_PROP_MAX_RATE_SIZE)
 class OFPQueuePropMaxRate(OFPQueueProp):
     def __init__(self, rate, property_=None, len_=None):
         super(OFPQueuePropMaxRate, self).__init__()
@@ -5702,7 +5866,30 @@ class OFPQueuePropMaxRate(OFPQueueProp):
         return cls(rate)
 
 
-# TODO: add ofp_queue_prop_experimenter
+@OFPQueueProp.register_property(ofproto.OFPQT_EXPERIMENTER)
+class OFPQueuePropExperimenter(OFPQueueProp):
+    _EXPERIMENTER_DATA_PACK_STR = '!B'
+    _EXPERIMENTER_DATA_SIZE = 1
+
+    def __init__(self, experimenter, data=None, property_=None, len_=None):
+        super(OFPQueuePropExperimenter, self).__init__()
+        self.experimenter = experimenter
+        self.data = data
+
+    @classmethod
+    def parser(cls, buf, offset):
+        (experimenter,) = struct.unpack_from(
+            ofproto.OFP_QUEUE_PROP_EXPERIMENTER_PACK_STR, buf, offset)
+        return cls(experimenter)
+
+    def parse_experimenter_data(self, rest):
+        data = []
+        while rest:
+            (d,) = struct.unpack_from(
+                self._EXPERIMENTER_DATA_PACK_STR, rest, 0)
+            data.append(d)
+            rest = rest[self._EXPERIMENTER_DATA_SIZE:]
+        self.data = data
 
 
 class OFPPacketQueue(StringifyMixin):
@@ -5845,6 +6032,7 @@ class OFPRoleReply(MsgBase):
         @set_ev_cls(ofp_event.EventOFPRoleReply, MAIN_DISPATCHER)
         def role_reply_handler(self, ev):
             msg = ev.msg
+            dp = msg.datapath
             ofp = dp.ofproto
 
             if msg.role == ofp.OFPCR_ROLE_NOCHANGE:
@@ -6012,12 +6200,13 @@ class OFPSetAsync(MsgBase):
             ofp = datapath.ofproto
             ofp_parser = datapath.ofproto_parser
 
-            packet_in_mask = ofp.OFPR_ACTION | ofp.OFPR_INVALID_TTL
-            port_status_mask = (ofp.OFPPR_ADD | ofp.OFPPR_DELETE |
-                                ofp.OFPPR_MODIFY)
-            flow_removed_mask = (ofp.OFPRR_IDLE_TIMEOUT |
-                                 ofp.OFPRR_HARD_TIMEOUT |
-                                 ofp.OFPRR_DELETE)
+            packet_in_mask = 1 << ofp.OFPR_ACTION | 1 << ofp.OFPR_INVALID_TTL
+            port_status_mask = (1 << ofp.OFPPR_ADD
+                                | 1 << ofp.OFPPR_DELETE
+                                | 1 << ofp.OFPPR_MODIFY)
+            flow_removed_mask = (1 << ofp.OFPRR_IDLE_TIMEOUT
+                                 | 1 << ofp.OFPRR_HARD_TIMEOUT
+                                 | 1 << ofp.OFPRR_DELETE)
             req = ofp_parser.OFPSetAsync(datapath,
                                          [packet_in_mask, 0],
                                          [port_status_mask, 0],
@@ -6038,8 +6227,6 @@ class OFPSetAsync(MsgBase):
                       self.port_status_mask[0], self.port_status_mask[1],
                       self.flow_removed_mask[0], self.flow_removed_mask[1])
 
-
-from ryu.ofproto import nx_actions
 
 nx_actions.generate(
     'ryu.ofproto.ofproto_v1_3',

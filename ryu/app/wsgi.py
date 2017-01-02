@@ -17,22 +17,23 @@
 import inspect
 from types import MethodType
 
-import webob.dec
-from webob.response import Response
-from ryu import cfg
-from ryu.lib import hub
 from routes import Mapper
 from routes.util import URLGenerator
-
-import ryu.contrib
-ryu.contrib.update_module_path()
+import six
 from tinyrpc.server import RPCServer
 from tinyrpc.dispatch import RPCDispatcher
 from tinyrpc.dispatch import public as rpc_public
 from tinyrpc.protocols.jsonrpc import JSONRPCProtocol
 from tinyrpc.transports import ServerTransport, ClientTransport
 from tinyrpc.client import RPCClient
-ryu.contrib.restore_module_path()
+import webob.dec
+import webob.exc
+from webob.request import Request as webob_Request
+from webob.response import Response as webob_Response
+
+from ryu import cfg
+from ryu.lib import hub
+
 
 CONF = cfg.CONF
 CONF.register_cli_opts([
@@ -54,6 +55,33 @@ def route(name, path, methods=None, requirements=None):
         }
         return controller_method
     return _route
+
+
+class Request(webob_Request):
+    """
+    Wrapper class for webob.request.Request.
+
+    The behavior of this class is the same as webob.request.Request
+    except for setting "charset" to "UTF-8" automatically.
+    """
+    DEFAULT_CHARSET = "UTF-8"
+
+    def __init__(self, environ, charset=DEFAULT_CHARSET, *args, **kwargs):
+        super(Request, self).__init__(
+            environ, charset=charset, *args, **kwargs)
+
+
+class Response(webob_Response):
+    """
+    Wrapper class for webob.response.Response.
+
+    The behavior of this class is the same as webob.response.Response
+    except for setting "charset" to "UTF-8" automatically.
+    """
+    DEFAULT_CHARSET = "UTF-8"
+
+    def __init__(self, charset=DEFAULT_CHARSET, *args, **kwargs):
+        super(Response, self).__init__(charset=charset, *args, **kwargs)
 
 
 class WebSocketRegistrationWrapper(object):
@@ -83,7 +111,7 @@ class _AlreadyHandledResponse(Response):
 
 def websocket(name, path):
     def _websocket(controller_func):
-        def __websocket(self, req, **kwargs):
+        def __websocket(self, req, **_):
             wrapper = WebSocketRegistrationWrapper(controller_func, self)
             ws_wsgi = hub.WebSocketWSGI(wrapper)
             ws_wsgi(req.environ, req.start_response)
@@ -108,6 +136,7 @@ class ControllerBase(object):
     def __init__(self, req, link, data, **config):
         self.req = req
         self.link = link
+        self.data = data
         self.parent = None
         for name, value in config.items():
             setattr(self, name, value)
@@ -138,10 +167,10 @@ class WebSocketServerTransport(ServerTransport):
         if message is None:
             raise WebSocketDisconnectedError()
         context = None
-        return (context, message)
+        return context, message
 
     def send_reply(self, context, reply):
-        self.ws.send(unicode(reply))
+        self.ws.send(six.text_type(reply))
 
 
 class WebSocketRPCServer(RPCServer):
@@ -171,7 +200,7 @@ class WebSocketClientTransport(ClientTransport):
         self.queue = queue
 
     def send_message(self, message, expect_reply=True):
-        self.ws.send(unicode(message))
+        self.ws.send(six.text_type(message))
 
         if expect_reply:
             return self.queue.get()
@@ -224,23 +253,15 @@ class WSGIApplication(object):
         self.registory = {}
         self._wsmanager = WebSocketManager()
         super(WSGIApplication, self).__init__()
-        # XXX: Switch how to call the API of Routes for every version
-        match_argspec = inspect.getargspec(self.mapper.match)
-        if 'environ' in match_argspec.args:
-            # New API
-            self._match = self._match_with_environ
-        else:
-            # Old API
-            self._match = self._match_with_path_info
 
-    def _match_with_environ(self, req):
-        match = self.mapper.match(environ=req.environ)
-        return match
-
-    def _match_with_path_info(self, req):
-        self.mapper.environ = req.environ
-        match = self.mapper.match(req.path_info)
-        return match
+    def _match(self, req):
+        # Note: Invoke the new API, first. If the arguments unmatched,
+        # invoke the old API.
+        try:
+            return self.mapper.match(environ=req.environ)
+        except TypeError:
+            self.mapper.environ = req.environ
+            return self.mapper.match(req.path_info)
 
     @wsgify_hack
     def __call__(self, req, start_response):
@@ -263,9 +284,13 @@ class WSGIApplication(object):
         return controller(req)
 
     def register(self, controller, data=None):
-        methods = inspect.getmembers(controller,
-                                     lambda v: inspect.ismethod(v) and
-                                     hasattr(v, 'routing_info'))
+        def _target_filter(attr):
+            if not inspect.ismethod(attr) and not inspect.isfunction(attr):
+                return False
+            if not hasattr(attr, 'routing_info'):
+                return False
+            return True
+        methods = inspect.getmembers(controller, _target_filter)
         for method_name, method in methods:
             routing_info = getattr(method, 'routing_info')
             name = routing_info['name']

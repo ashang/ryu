@@ -23,12 +23,17 @@
 #   value and mask are on-wire bytes.
 #   mask is None if no mask.
 
-import itertools
+import six
 import struct
 
 from ryu.ofproto import ofproto_common
 from ryu.lib.pack_utils import msg_pack_into
 from ryu.lib import type_desc
+
+if six.PY3:
+    _ord = int
+else:
+    _ord = ord
 
 # 'OFPXXC_EXPERIMENTER' has not corresponding field in the specification.
 # This is transparently value for Experimenter class ID for OXM/OXS.
@@ -77,7 +82,7 @@ def _get_field_info_by_number(oxx, num_to_field, n):
         name = f.name
     except KeyError:
         t = type_desc.UnknownType
-        if isinstance(n, int):
+        if isinstance(n, six.integer_types):
             name = 'field_%d' % (n,)
         else:
             raise KeyError('unknown %s field number: %s' % (oxx.upper(), n))
@@ -122,7 +127,7 @@ def _normalize_user(oxx, mod, k, uv):
         return (k, uv)
     # apply mask
     if m is not None:
-        v = ''.join(chr(ord(x) & ord(y)) for (x, y) in itertools.izip(v, m))
+        v = b''.join(six.int2byte(_ord(x) & _ord(y)) for (x, y) in zip(v, m))
     try:
         to_user = getattr(mod, oxx + '_to_user')
         (k2, uv2) = to_user(n, v, m)
@@ -206,15 +211,14 @@ def _make_exp_hdr(oxx, mod, n):
         (exp_id, exp_type) = n
         assert desc.experimenter_id == exp_id
         oxx_type = getattr(desc, oxx + '_type')
-        if hasattr(desc, 'exp_type'):  # XXX
+        if desc.exp_type == 2560:
             # XXX
             # This block implements EXT-256 style experimenter OXM.
-            assert desc.exp_type == 2560
             exp_hdr_pack_str = '!IH'  # experimenter_id, exp_type
             msg_pack_into(exp_hdr_pack_str, exp_hdr, 0,
                           desc.experimenter_id, desc.exp_type)
         else:
-            assert oxx_type == exp_type
+            assert oxx_type == exp_type | (OFPXXC_EXPERIMENTER << 7)
             exp_hdr_pack_str = '!I'  # experimenter_id
             msg_pack_into(exp_hdr_pack_str, exp_hdr, 0,
                           desc.experimenter_id)

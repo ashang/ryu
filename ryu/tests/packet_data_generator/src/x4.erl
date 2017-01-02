@@ -268,6 +268,9 @@ x() ->
                           #ofp_action_set_mpls_ttl{mpls_ttl = 10},
                           #ofp_action_dec_nw_ttl{},
                           #ofp_action_set_nw_ttl{nw_ttl = 10},
+                          #ofp_action_experimenter{
+                              experimenter = 101,
+                              data = <<0,1,2,3,4,5,6,7>>},
                           #ofp_action_set_queue{queue_id = 3},
                           #ofp_action_group{group_id = 99},
                           #ofp_action_output{port = 6,max_len = no_buffer}]},
@@ -449,7 +452,12 @@ x() ->
                                    #ofp_action_set_queue{queue_id = 3},
                                    #ofp_action_group{group_id = 99},
                                    #ofp_action_output{port = 6,
-                                                      max_len = no_buffer}]},
+                                                      max_len = no_buffer},
+                                   #ofp_action_experimenter{experimenter = 98765432,
+                                                            data = <<"exp_data">>},
+                                   #ofp_action_experimenter{experimenter = 8992,
+                                                            data = <<"exp_data">>}
+                                                            ]},
                           #ofp_instruction_apply_actions{
                               actions =
                                   [#ofp_action_set_field{
@@ -565,13 +573,25 @@ x() ->
             #ofp_packet_queue{queue_id = 99, port_no = 77,
                 properties = [
                     #ofp_queue_prop_min_rate{rate = 10},
-                    #ofp_queue_prop_max_rate{rate = 900}
+                    #ofp_queue_prop_max_rate{rate = 900},
+                    #ofp_queue_prop_experimenter{experimenter = 999,
+                                                 data = <<>>}
                 ]
             },
             #ofp_packet_queue{queue_id = 88, port_no = 77,
                 properties = [
                     #ofp_queue_prop_min_rate{rate = 100},
-                    #ofp_queue_prop_max_rate{rate = 200}
+                    #ofp_queue_prop_max_rate{rate = 200},
+                    #ofp_queue_prop_experimenter{experimenter = 999,
+                                                 data = <<1:8>>}
+                ]
+            },
+            #ofp_packet_queue{queue_id = 77, port_no = 77,
+                properties = [
+                    #ofp_queue_prop_min_rate{rate = 200},
+                    #ofp_queue_prop_max_rate{rate = 400},
+                    #ofp_queue_prop_experimenter{experimenter = 999,
+                                                 data = <<1:8,2:8>>}
                 ]
             }
         ]},

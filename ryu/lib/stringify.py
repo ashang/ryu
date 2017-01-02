@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-#
 # Copyright (C) 2013 Nippon Telegraph and Telephone Corporation.
 # Copyright (C) 2013 YAMAMOTO Takashi <yamamoto at valinux co jp>
 #
@@ -16,12 +14,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import print_function
+
 import base64
-import collections
 import inspect
 
+import six
 
-# Some arguments to __init__ is mungled in order to avoid name conflicts
+# Some arguments to __init__ is mangled in order to avoid name conflicts
 # with builtin names.
 # The standard mangling is to append '_' in order to avoid name clashes
 # with reserved keywords.
@@ -37,15 +37,8 @@ import inspect
 # grep __init__ *.py | grep '[^_]_\>' showed that
 # 'len', 'property', 'set', 'type'
 # A bit more generic way is adopted
-try:
-    # Python 2
-    import __builtin__
-except ImportError:
-    # Python 3
-    import builtins as __builtin__
 
-_RESERVED_KEYWORD = dir(__builtin__)
-
+_RESERVED_KEYWORD = dir(six.moves.builtins)
 
 _mapdict = lambda f, d: dict([(k, f(v)) for k, v in d.items()])
 _mapdict_key = lambda f, d: dict([(f(k), v) for k, v in d.items()])
@@ -59,21 +52,38 @@ class TypeDescr(object):
 class AsciiStringType(TypeDescr):
     @staticmethod
     def encode(v):
-        return unicode(v, 'ascii')
+        # TODO: AsciiStringType data should probably be stored as
+        # text_type in class data.  This isinstance() check exists
+        # because OFPDescStats violates this.
+        if six.PY3 and isinstance(v, six.text_type):
+            return v
+        return six.text_type(v, 'ascii')
 
     @staticmethod
     def decode(v):
+        if six.PY3:
+            return v
         return v.encode('ascii')
 
 
 class Utf8StringType(TypeDescr):
     @staticmethod
     def encode(v):
-        return unicode(v, 'utf-8')
+        return six.text_type(v, 'utf-8')
 
     @staticmethod
     def decode(v):
         return v.encode('utf-8')
+
+
+class AsciiStringListType(TypeDescr):
+    @staticmethod
+    def encode(v):
+        return [AsciiStringType.encode(x) for x in v]
+
+    @staticmethod
+    def decode(v):
+        return [AsciiStringType.decode(x) for x in v]
 
 
 class NXFlowSpecFieldType(TypeDescr):
@@ -84,19 +94,20 @@ class NXFlowSpecFieldType(TypeDescr):
         if not isinstance(v, tuple):
             return v
         field, ofs = v
-        return [AsciiStringType.encode(field), ofs]
+        return [field, ofs]
 
     @staticmethod
     def decode(v):
         if not isinstance(v, list):
             return v
         field, ofs = v
-        return (AsciiStringType.decode(field), ofs)
+        return field, ofs
 
 
 _types = {
     'ascii': AsciiStringType,
     'utf-8': Utf8StringType,
+    'asciilist': AsciiStringListType,
     'nx-flow-spec-field': NXFlowSpecFieldType,  # XXX this should not be here
 }
 
@@ -111,12 +122,13 @@ class StringifyMixin(object):
 
     Currently the following types are implemented.
 
-    ===== ==========
-    Type  Descrption
-    ===== ==========
-    ascii US-ASCII
-    utf-8 UTF-8
-    ===== ==========
+    ========= =============
+    Type      Description
+    ========= =============
+    ascii     US-ASCII
+    utf-8     UTF-8
+    asciilist list of ascii
+    ========= =============
 
     Example::
         _TYPE = {
@@ -131,6 +143,15 @@ class StringifyMixin(object):
 
     _class_prefixes = []
     _class_suffixes = []
+
+    # List of attributes ignored in the str and json representations.
+    _base_attributes = []
+
+    # Optional attributes included in the str and json representations.
+    # e.g.) In case of attributes are property, the attributes will be
+    # skipped in the str and json representations.
+    # Then, please specify the attributes into this list.
+    _opt_attributes = []
 
     def stringify_attrs(self):
         """an override point for sub classes"""
@@ -147,14 +168,14 @@ class StringifyMixin(object):
     def _is_class(cls, dict_):
         # we distinguish a dict like OFPSwitchFeatures.ports
         # from OFPxxx classes using heuristics.
-        # exmples of OFP classes:
+        # Examples of OFP classes:
         #   {"OFPMatch": { ... }}
         #   {"MTIPv6SRC": { ... }}
         assert isinstance(dict_, dict)
         if len(dict_) != 1:
             return False
         k = list(dict_.keys())[0]
-        if not isinstance(k, (bytes, unicode)):
+        if not isinstance(k, (bytes, six.text_type)):
             return False
         for p in cls._class_prefixes:
             if k.startswith(p):
@@ -186,10 +207,14 @@ class StringifyMixin(object):
     @classmethod
     def _get_default_encoder(cls, encode_string):
         def _encode(v):
-            if isinstance(v, (bytes, unicode)):
+            if isinstance(v, (bytes, six.text_type)):
+                if isinstance(v, six.text_type):
+                    v = v.encode('utf-8')
                 json_value = encode_string(v)
+                if six.PY3:
+                    json_value = json_value.decode('ascii')
             elif isinstance(v, list):
-                json_value = map(_encode, v)
+                json_value = [_encode(ve) for ve in v]
             elif isinstance(v, dict):
                 json_value = _mapdict(_encode, v)
                 # while a python dict key can be any hashable object,
@@ -199,7 +224,7 @@ class StringifyMixin(object):
             else:
                 try:
                     json_value = v.to_jsondict()
-                except:
+                except Exception:
                     json_value = v
             return json_value
         return _encode
@@ -234,7 +259,7 @@ class StringifyMixin(object):
         =============  =====================================================
         """
         dict_ = {}
-        encode = lambda k, x: self._encode_value(k, x, encode_string)
+        encode = lambda key, val: self._encode_value(key, val, encode_string)
         for k, v in obj_attrs(self):
             dict_[k] = encode(k, v)
         return {self.__class__.__name__: dict_}
@@ -263,21 +288,23 @@ class StringifyMixin(object):
     @classmethod
     def _decode_value(cls, k, json_value, decode_string=base64.b64decode,
                       **additional_args):
+        # Note: To avoid passing redundant arguments (e.g. 'datapath' for
+        # non OFP classes), we omit '**additional_args' here.
         return cls._get_decoder(k, decode_string)(json_value)
 
     @classmethod
     def _get_default_decoder(cls, decode_string):
         def _decode(json_value, **additional_args):
-            if isinstance(json_value, (bytes, unicode)):
+            if isinstance(json_value, (bytes, six.text_type)):
                 v = decode_string(json_value)
             elif isinstance(json_value, list):
-                v = map(_decode, json_value)
+                v = [_decode(jv) for jv in json_value]
             elif isinstance(json_value, dict):
                 if cls._is_class(json_value):
                     v = cls.obj_from_jsondict(json_value, **additional_args)
                 else:
                     v = _mapdict(_decode, json_value)
-                    # XXXhack
+                    # XXX: Hack
                     # try to restore integer keys used by
                     # OFPSwitchFeatures.ports.
                     try:
@@ -350,14 +377,17 @@ def obj_python_attrs(msg_):
             yield(k, getattr(msg_, k))
         return
     base = getattr(msg_, '_base_attributes', [])
+    opt = getattr(msg_, '_opt_attributes', [])
     for k, v in inspect.getmembers(msg_):
-        if k.startswith('_'):
+        if k in opt:
+            pass
+        elif k.startswith('_'):
             continue
-        if callable(v):
+        elif callable(v):
             continue
-        if k in base:
+        elif k in base:
             continue
-        if hasattr(msg_.__class__, k):
+        elif hasattr(msg_.__class__, k):
             continue
         yield (k, v)
 
@@ -367,11 +397,11 @@ def obj_attrs(msg_):
     """
 
     if isinstance(msg_, StringifyMixin):
-        iter = msg_.stringify_attrs()
+        itr = msg_.stringify_attrs()
     else:
         # probably called by msg_str_attr
-        iter = obj_python_attrs(msg_)
-    for k, v in iter:
+        itr = obj_python_attrs(msg_)
+    for k, v in itr:
         if k.endswith('_') and k[:-1] in _RESERVED_KEYWORD:
             # XXX currently only StringifyMixin has restoring logic
             assert isinstance(msg_, StringifyMixin)

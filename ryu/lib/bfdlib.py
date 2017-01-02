@@ -37,6 +37,8 @@ import logging
 import time
 import random
 
+import six
+
 from ryu.base import app_manager
 from ryu.controller import event
 from ryu.controller import ofp_event
@@ -46,7 +48,6 @@ from ryu.exception import RyuException
 from ryu.ofproto.ether import ETH_TYPE_IP, ETH_TYPE_ARP
 from ryu.ofproto import ofproto_v1_3
 from ryu.ofproto import inet
-from ryu.lib import ofctl_v1_3
 from ryu.lib import hub
 from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet
@@ -77,7 +78,7 @@ class BFDSession(object):
                  detect_mult=3,
                  desired_min_tx_interval=1000000,
                  required_min_rx_interval=1000000,
-                 auth_type=0, auth_keys={}):
+                 auth_type=0, auth_keys=None):
         """
         Initialize a BFD session.
 
@@ -127,6 +128,7 @@ class BFDSession(object):
                               auth_keys={1: "secret key 1",
                                          2: "secret key 2"})
         """
+        auth_keys = auth_keys if auth_keys else {}
         assert not (auth_type and len(auth_keys) == 0)
 
         # RyuApp reference to BFDLib
@@ -228,7 +230,7 @@ class BFDSession(object):
         BFD packet receiver.
         """
         LOG.debug("[BFD][%s][RECV] BFD Control received: %s",
-                  hex(self._local_discr), str(bfd_pkt))
+                  hex(self._local_discr), six.binary_type(bfd_pkt))
         self._remote_discr = bfd_pkt.my_discr
         self._remote_state = bfd_pkt.state
         self._remote_demand_mode = bfd_pkt.flags & bfd.BFD_FLAG_DEMAND
@@ -460,7 +462,6 @@ class BFDSession(object):
                 self._remote_session_state == bfd.BFD_STATE_UP:
             flags |= bfd.BFD_FLAG_DEMAND
 
-        ver = 1
         diag = self._local_diag
         state = self._session_state
         detect_mult = self._detect_mult
@@ -566,17 +567,17 @@ class BFDPacket(object):
         """
         pkt = packet.Packet(data)
         i = iter(pkt)
-        eth_pkt = i.next()
+        eth_pkt = next(i)
 
-        assert type(eth_pkt) == ethernet.ethernet
+        assert isinstance(eth_pkt, ethernet.ethernet)
 
-        ipv4_pkt = i.next()
-        assert type(ipv4_pkt) == ipv4.ipv4
+        ipv4_pkt = next(i)
+        assert isinstance(ipv4_pkt, ipv4.ipv4)
 
-        udp_pkt = i.next()
-        assert type(udp_pkt) == udp.udp
+        udp_pkt = next(i)
+        assert isinstance(udp_pkt, udp.udp)
 
-        udp_payload = i.next()
+        udp_payload = next(i)
 
         return bfd.bfd.parser(udp_payload)[0]
 
@@ -615,12 +616,12 @@ class ARPPacket(object):
         # Iteratize pkt
         pkt = packet.Packet(data)
         i = iter(pkt)
-        eth_pkt = i.next()
+        eth_pkt = next(i)
         # Ensure it's an ethernet frame.
-        assert type(eth_pkt) == ethernet.ethernet
+        assert isinstance(eth_pkt, ethernet.ethernet)
 
-        arp_pkt = i.next()
-        if type(arp_pkt) != arp.arp:
+        arp_pkt = next(i)
+        if not isinstance(arp_pkt, arp.arp):
             raise ARPPacket.ARPUnknownFormat()
 
         if arp_pkt.opcode not in (ARP_REQUEST, ARP_REPLY):
@@ -786,7 +787,7 @@ class BFDLib(app_manager.RyuApp):
 
     def add_bfd_session(self, dpid, ofport, src_mac, src_ip,
                         dst_mac="FF:FF:FF:FF:FF:FF", dst_ip="255.255.255.255",
-                        auth_type=0, auth_keys={}):
+                        auth_type=0, auth_keys=None):
         """
         Establish a new BFD session and return My Discriminator of new session.
 
@@ -821,6 +822,7 @@ class BFDLib(app_manager.RyuApp):
                             auth_keys={1: "secret key 1",
                                        2: "secret key 2"})
         """
+        auth_keys = auth_keys if auth_keys else {}
         # Generate a unique discriminator
         while True:
             # Generate My Discriminator

@@ -20,6 +20,7 @@ except ImportError:
     # Python 2
     pass
 
+import six
 import sys
 import unittest
 from nose.tools import eq_
@@ -47,8 +48,8 @@ class Test_Parser_OFPStats(unittest.TestCase):
         stats = ofpp.OFPStats(**d)
         b = bytearray()
         stats.serialize(b, 0)
-        stats2 = stats.parser(buffer(b), 0)
-        for k, v in d.iteritems():
+        stats2 = stats.parser(six.binary_type(b), 0)
+        for k, v in d.items():
             ok_(k in stats)
             ok_(k in stats2)
             eq_(stats[k], v)
@@ -168,7 +169,7 @@ def _add_tests():
                     l = itertools.product(l, cls.generate())
                     keys.append(k)
                     clss.append(cls)
-                l = map(lambda x: flatten(x)[1:], l)
+                l = [flatten(x)[1:] for x in l]
                 for values in l:
                     d = dict(zip(keys, values))
                     for n, uv in d.items():
@@ -193,7 +194,10 @@ def _add_tests():
 
                     def _run(self, name, ofpp, d):
                         print('processing %s ...' % name)
-                        self._test(name, ofpp, d)
+                        if six.PY3:
+                            self._test(self, name, ofpp, d)
+                        else:
+                            self._test(name, ofpp, d)
                     print('adding %s ...' % method_name)
                     f = functools.partial(_run, name=method_name,
                                           ofpp=ofpp, d=d)

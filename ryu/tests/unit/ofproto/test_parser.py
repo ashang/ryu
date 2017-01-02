@@ -14,6 +14,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import print_function
+
+import six
 import sys
 import unittest
 from nose.tools import eq_
@@ -26,6 +29,7 @@ from ryu.ofproto import ofproto_v1_3
 from ryu.ofproto import ofproto_v1_4
 from ryu.ofproto import ofproto_v1_5
 from ryu.tests import test_lib
+from ryu import exception
 import json
 
 
@@ -36,7 +40,7 @@ implemented = {
         ofproto_v1_0.OFPT_FEATURES_REQUEST: (False, True),
         ofproto_v1_0.OFPT_FEATURES_REPLY: (True, False),
         ofproto_v1_0.OFPT_PACKET_IN: (True, False),
-        ofproto_v1_0.OFPT_FLOW_MOD: (False, True),
+        ofproto_v1_0.OFPT_FLOW_MOD: (True, True),
     },
     3: {
         ofproto_v1_2.OFPT_FEATURES_REQUEST: (False, True),
@@ -48,7 +52,7 @@ implemented = {
         ofproto_v1_2.OFPT_FLOW_REMOVED: (True, False),
         ofproto_v1_2.OFPT_PORT_STATUS: (True, False),
         ofproto_v1_2.OFPT_PACKET_OUT: (False, True),
-        ofproto_v1_2.OFPT_FLOW_MOD: (False, True),
+        ofproto_v1_2.OFPT_FLOW_MOD: (True, True),
         ofproto_v1_2.OFPT_GROUP_MOD: (False, True),
         ofproto_v1_2.OFPT_PORT_MOD: (False, True),
         ofproto_v1_2.OFPT_TABLE_MOD: (False, True),
@@ -71,7 +75,7 @@ implemented = {
         ofproto_v1_3.OFPT_FLOW_REMOVED: (True, False),
         ofproto_v1_3.OFPT_PORT_STATUS: (True, False),
         ofproto_v1_3.OFPT_PACKET_OUT: (False, True),
-        ofproto_v1_3.OFPT_FLOW_MOD: (False, True),
+        ofproto_v1_3.OFPT_FLOW_MOD: (True, True),
         ofproto_v1_3.OFPT_GROUP_MOD: (False, True),
         ofproto_v1_3.OFPT_PORT_MOD: (False, True),
         ofproto_v1_3.OFPT_METER_MOD: (False, True),
@@ -98,10 +102,10 @@ implemented = {
         ofproto_v1_4.OFPT_FLOW_REMOVED: (True, False),
         ofproto_v1_4.OFPT_PORT_STATUS: (True, False),
         ofproto_v1_4.OFPT_PACKET_OUT: (False, True),
-        ofproto_v1_4.OFPT_FLOW_MOD: (False, True),
-        ofproto_v1_4.OFPT_GROUP_MOD: (False, True),
+        ofproto_v1_4.OFPT_FLOW_MOD: (True, True),
+        ofproto_v1_4.OFPT_GROUP_MOD: (True, True),
         ofproto_v1_4.OFPT_PORT_MOD: (False, True),
-        ofproto_v1_4.OFPT_METER_MOD: (False, True),
+        ofproto_v1_4.OFPT_METER_MOD: (True, True),
         ofproto_v1_4.OFPT_TABLE_MOD: (False, True),
         ofproto_v1_4.OFPT_MULTIPART_REQUEST: (False, True),
         ofproto_v1_4.OFPT_MULTIPART_REPLY: (True, False),
@@ -113,7 +117,7 @@ implemented = {
         ofproto_v1_4.OFPT_SET_ASYNC: (False, True),
         ofproto_v1_4.OFPT_ROLE_STATUS: (True, False),
         ofproto_v1_4.OFPT_TABLE_STATUS: (True, False),
-        ofproto_v1_4.OFPT_REQUESTFORWARD: (False, True),
+        ofproto_v1_4.OFPT_REQUESTFORWARD: (True, True),
         ofproto_v1_4.OFPT_BUNDLE_CONTROL: (False, True),
         ofproto_v1_4.OFPT_BUNDLE_ADD_MESSAGE: (False, True),
     },
@@ -128,10 +132,10 @@ implemented = {
         ofproto_v1_5.OFPT_FLOW_REMOVED: (True, False),
         ofproto_v1_5.OFPT_PORT_STATUS: (True, False),
         ofproto_v1_5.OFPT_PACKET_OUT: (False, True),
-        ofproto_v1_5.OFPT_FLOW_MOD: (False, True),
-        ofproto_v1_5.OFPT_GROUP_MOD: (False, True),
+        ofproto_v1_5.OFPT_FLOW_MOD: (True, True),
+        ofproto_v1_5.OFPT_GROUP_MOD: (True, True),
         ofproto_v1_5.OFPT_PORT_MOD: (False, True),
-        ofproto_v1_5.OFPT_METER_MOD: (False, True),
+        ofproto_v1_5.OFPT_METER_MOD: (True, True),
         ofproto_v1_5.OFPT_TABLE_MOD: (False, True),
         ofproto_v1_5.OFPT_MULTIPART_REQUEST: (False, True),
         ofproto_v1_5.OFPT_MULTIPART_REPLY: (True, False),
@@ -143,9 +147,10 @@ implemented = {
         ofproto_v1_5.OFPT_SET_ASYNC: (False, True),
         ofproto_v1_5.OFPT_ROLE_STATUS: (True, False),
         ofproto_v1_5.OFPT_TABLE_STATUS: (True, False),
-        ofproto_v1_5.OFPT_REQUESTFORWARD: (False, True),
+        ofproto_v1_5.OFPT_REQUESTFORWARD: (True, True),
         ofproto_v1_5.OFPT_BUNDLE_CONTROL: (True, True),
         ofproto_v1_5.OFPT_BUNDLE_ADD_MESSAGE: (False, True),
+        ofproto_v1_5.OFPT_CONTROLLER_STATUS: (True, False),
     },
 }
 
@@ -173,6 +178,17 @@ class Test_Parser(unittest.TestCase):
         return ofproto_parser.ofp_msg_from_jsondict(dp, jsondict)
 
     def _test_msg(self, name, wire_msg, json_str):
+        def bytes_eq(buf1, buf2):
+            if buf1 != buf2:
+                msg = 'EOF in either data'
+                for i in range(0, min(len(buf1), len(buf2))):
+                    c1 = six.indexbytes(six.binary_type(buf1), i)
+                    c2 = six.indexbytes(six.binary_type(buf2), i)
+                    if c1 != c2:
+                        msg = 'differs at chr %d, %d != %d' % (i, c1, c2)
+                        break
+                assert buf1 == buf2, "%r != %r, %s" % (buf1, buf2, msg)
+
         json_dict = json.loads(json_str)
         # on-wire -> OFPxxx -> json
         (version, msg_type, msg_len, xid) = ofproto_parser.header(wire_msg)
@@ -184,26 +200,34 @@ class Test_Parser(unittest.TestCase):
 
         dp = ofproto_protocol.ProtocolDesc(version=version)
         if has_parser:
-            msg = ofproto_parser.msg(dp, version, msg_type, msg_len, xid,
-                                     wire_msg)
-            json_dict2 = self._msg_to_jsondict(msg)
+            try:
+                msg = ofproto_parser.msg(dp, version, msg_type, msg_len, xid,
+                                         wire_msg)
+                json_dict2 = self._msg_to_jsondict(msg)
+            except exception.OFPTruncatedMessage as e:
+                json_dict2 = {'OFPTruncatedMessage':
+                              self._msg_to_jsondict(e.ofpmsg)}
             # XXXdebug code
-            open(('/tmp/%s.json' % name), 'wb').write(json.dumps(json_dict2))
+            open(('/tmp/%s.json' % name), 'w').write(json.dumps(json_dict2))
             eq_(json_dict, json_dict2)
+            if 'OFPTruncatedMessage' in json_dict2:
+                return
 
         # json -> OFPxxx -> json
+        xid = json_dict[list(json_dict.keys())[0]].pop('xid', None)
         msg2 = self._jsondict_to_msg(dp, json_dict)
+        msg2.set_xid(xid)
         if has_serializer:
             msg2.serialize()
             eq_(self._msg_to_jsondict(msg2), json_dict)
-            eq_(wire_msg, msg2.buf)
+            bytes_eq(wire_msg, msg2.buf)
 
             # check if "len" "length" fields can be omitted
 
             def _remove(d, names):
                 f = lambda x: _remove(x, names)
                 if isinstance(d, list):
-                    return map(f, d)
+                    return list(map(f, d))
                 if isinstance(d, dict):
                     d2 = {}
                     for k, v in d.items():
@@ -215,17 +239,17 @@ class Test_Parser(unittest.TestCase):
 
             json_dict3 = _remove(json_dict, ['len', 'length'])
             msg3 = self._jsondict_to_msg(dp, json_dict3)
+            msg3.set_xid(xid)
             msg3.serialize()
-            eq_(wire_msg, msg3.buf)
+            bytes_eq(wire_msg, msg3.buf)
 
             msg2.serialize()
-            eq_(wire_msg, msg2.buf)
+            bytes_eq(wire_msg, msg2.buf)
 
 
 def _add_tests():
     import os
     import os.path
-    import fnmatch
     import functools
 
     this_dir = os.path.dirname(sys.modules[__name__].__file__)
@@ -244,15 +268,35 @@ def _add_tests():
         jdir = json_dir + '/' + ver
         n_added = 0
         for file in os.listdir(pdir):
-            if not fnmatch.fnmatch(file, '*.packet'):
+            if file.endswith('.packet'):
+                truncated = None
+            elif '.truncated' in file:
+                # contents of .truncated files aren't relevant
+                s1, s2 = file.split('.truncated')
+                try:
+                    truncated = int(s2)
+                except ValueError:
+                    continue
+                file = s1 + '.packet'
+            else:
                 continue
             wire_msg = open(pdir + '/' + file, 'rb').read()
-            json_str = open(jdir + '/' + file + '.json', 'rb').read()
+            if not truncated:
+                json_str = open(jdir + '/' + file + '.json', 'r').read()
+            else:
+                json_str = open(jdir + '/' + file +
+                                '.truncated%d.json' % truncated, 'r').read()
+                wire_msg = wire_msg[:truncated]
             method_name = ('test_' + file).replace('-', '_').replace('.', '_')
+            if truncated:
+                method_name += '_truncated%d' % truncated
 
             def _run(self, name, wire_msg, json_str):
                 print('processing %s ...' % name)
-                self._test_msg(name, wire_msg, json_str)
+                if six.PY3:
+                    self._test_msg(self, name, wire_msg, json_str)
+                else:
+                    self._test_msg(name, wire_msg, json_str)
             print('adding %s ...' % method_name)
             f = functools.partial(_run, name=method_name, wire_msg=wire_msg,
                                   json_str=json_str)

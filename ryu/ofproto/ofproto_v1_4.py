@@ -19,6 +19,8 @@ OpenFlow 1.4 definitions.
 """
 
 from ryu.lib import type_desc
+from ryu.ofproto import nicira_ext
+from ryu.ofproto import ofproto_utils
 from ryu.ofproto import oxm_fields
 
 from struct import calcsize
@@ -389,9 +391,12 @@ oxm_types = [
     oxm_fields.OpenFlowBasic('tunnel_id', 38, type_desc.Int8),
     oxm_fields.OpenFlowBasic('ipv6_exthdr', 39, type_desc.Int2),
     oxm_fields.OpenFlowBasic('pbb_uca', 41, type_desc.Int1),
-    oxm_fields.NiciraExtended1('tun_ipv4_src', 31, type_desc.IPv4Addr),
-    oxm_fields.NiciraExtended1('tun_ipv4_dst', 32, type_desc.IPv4Addr),
-]
+    # EXT-109 TCP flags match field Extension
+    oxm_fields.ONFExperimenter('tcp_flags', 42, type_desc.Int2),
+    # EXT-233 Output match Extension
+    # NOTE(yamamoto): The spec says uint64_t but I assume it's an error.
+    oxm_fields.ONFExperimenter('actset_output', 43, type_desc.Int4),
+] + nicira_ext.oxm_types
 
 oxm_fields.generate(__name__)
 
@@ -1153,11 +1158,6 @@ OFP_BUCKET_COUNTER_PACK_STR = '!QQ'
 OFP_BUCKET_COUNTER_SIZE = 16
 assert calcsize(OFP_BUCKET_COUNTER_PACK_STR) == OFP_BUCKET_COUNTER_SIZE
 
-# struct ofp_group_desc_stats
-OFP_GROUP_DESC_STATS_PACK_STR = '!HBxI'
-OFP_GROUP_DESC_STATS_SIZE = 8
-assert calcsize(OFP_GROUP_DESC_STATS_PACK_STR) == OFP_GROUP_DESC_STATS_SIZE
-
 # struct ofp_group_stats
 OFP_GROUP_STATS_PACK_STR = '!H2xII4xQQII'
 OFP_GROUP_STATS_SIZE = 40
@@ -1167,6 +1167,12 @@ assert calcsize(OFP_GROUP_STATS_PACK_STR) == OFP_GROUP_STATS_SIZE
 OFP_GROUP_DESC_PACK_STR = '!HBxI'
 OFP_GROUP_DESC_SIZE = 8
 assert calcsize(OFP_GROUP_DESC_PACK_STR) == OFP_GROUP_DESC_SIZE
+
+# struct ofp_group_desc_stats
+# Backward compatibility with 1.3.1 - avoid breaking the API.
+OFP_GROUP_DESC_STATS_PACK_STR = OFP_GROUP_DESC_PACK_STR
+OFP_GROUP_DESC_STATS_SIZE = OFP_GROUP_DESC_SIZE
+assert calcsize(OFP_GROUP_DESC_STATS_PACK_STR) == OFP_GROUP_DESC_STATS_SIZE
 
 # enum ofp_group_capabilities
 OFPGFC_SELECT_WEIGHT = 1 << 0       # Support weight for select groups.
@@ -1400,8 +1406,15 @@ OFPACPT_TABLE_STATUS_SLAVE = 8          # Table status mask for slave.
 OFPACPT_TABLE_STATUS_MASTER = 9         # Table status mask for master.
 OFPACPT_REQUESTFORWARD_SLAVE = 10       # RequestForward mask for slave.
 OFPACPT_REQUESTFORWARD_MASTER = 11      # RequestForward mask for master.
-OFPTFPT_EXPERIMENTER_SLAVE = 0xFFFE     # Experimenter for slave.
-OFPTFPT_EXPERIMENTER_MASTER = 0xFFFF    # Experimenter for master.
+OFPTFPT_EXPERIMENTER_SLAVE = 0xFFFE     # Experimenter for slave (depracated).
+OFPTFPT_EXPERIMENTER_MASTER = 0xFFFF    # Experimenter for master (depracated).
+                                        # New or updated Ryu applications shall use
+                                        # OFPACPT_EXPERIMENTER_SLAVE and OFPACPT_EXPERIMENTER_MASTER.
+                                        # The variable name is a typo of in specifications before v1.5.0.
+OFPACPT_EXPERIMENTER_SLAVE = 0xFFFE     # Experimenter for slave.
+OFPACPT_EXPERIMENTER_MASTER = 0xFFFF    # Experimenter for master.
+                                        # Backporting from ofproto_v1_5 for consistency with
+                                        # later OF specs.
 
 # struct ofp_async_config_prop_reasons
 OFP_ASYNC_CONFIG_PROP_REASONS_PACK_STR = '!HHI'
@@ -1470,6 +1483,18 @@ OFP_BUNDLE_ADD_MSG_PACK_STR = (OFP_BUNDLE_ADD_MSG_0_PACK_STR +
 OFP_BUNDLE_ADD_MSG_SIZE = 24
 assert (calcsize(OFP_BUNDLE_ADD_MSG_PACK_STR) + OFP_HEADER_SIZE ==
         OFP_BUNDLE_ADD_MSG_SIZE)
+
+# Note: struct ofp_prop_experimenter is specific to this implementation.
+# It does not have a corresponding structure in the specification.
+# This structure defines common structure for ofp_*_prop_experimenter.
+# struct ofp_prop_experimenter
+OFP_PROP_EXPERIMENTER_PACK_STR = '!HHII'
+OFP_PROP_EXPERIMENTER_SIZE = 12
+assert (calcsize(OFP_PROP_EXPERIMENTER_PACK_STR) ==
+        OFP_PROP_EXPERIMENTER_SIZE)
+
+# generate utility methods
+ofproto_utils.generate(__name__)
 
 # define constants
 OFP_VERSION = 0x05
